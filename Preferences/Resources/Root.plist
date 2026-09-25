@@ -2,13 +2,23 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>title</key>
+	<string>锁屏时间渐变</string>
 	<key>items</key>
 	<array>
 		<dict>
 			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>label</key>
+			<string>Liquidify 时钟融合</string>
+			<key>footerText</key>
+			<string>仅为已安装的 Liquidify 玻璃时间添加渐变，不创建第二个时钟。字体、大小、玻璃折射继续在原插件中设置。</string>
+		</dict>
+		<dict>
+			<key>cell</key>
 			<string>PSSwitchCell</string>
 			<key>label</key>
-			<string>启用渐变时间</string>
+			<string>启用渐变叠加</string>
 			<key>key</key>
 			<string>enabled</string>
 			<key>default</key>
@@ -18,27 +28,81 @@
 		</dict>
 		<dict>
 			<key>cell</key>
-			<string>PSEditTextCell</string>
+			<string>PSGroupCell</string>
 			<key>label</key>
-			<string>起始颜色</string>
-			<key>key</key>
-			<string>startColor</string>
-			<key>default</key>
-			<string>#FFFFFF</string>
-			<key>defaults</key>
-			<string>com.minis.lockscreengradientclock</string>
+			<string>五色渐变</string>
+			<key>footerText</key>
+			<string>点击颜色项打开系统选色器，颜色按从左到右排列。</string>
 		</dict>
 		<dict>
 			<key>cell</key>
-			<string>PSEditTextCell</string>
+			<string>PSButtonCell</string>
 			<key>label</key>
-			<string>结束颜色</string>
+			<string>颜色 1 · 青</string>
 			<key>key</key>
-			<string>endColor</string>
+			<string>color1</string>
 			<key>default</key>
-			<string>#66CCFF</string>
+			<string>#39D6ED</string>
 			<key>defaults</key>
 			<string>com.minis.lockscreengradientclock</string>
+			<key>action</key>
+			<string>chooseColor:</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSButtonCell</string>
+			<key>label</key>
+			<string>颜色 2 · 蓝</string>
+			<key>key</key>
+			<string>color2</string>
+			<key>default</key>
+			<string>#4D7CFF</string>
+			<key>defaults</key>
+			<string>com.minis.lockscreengradientclock</string>
+			<key>action</key>
+			<string>chooseColor:</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSButtonCell</string>
+			<key>label</key>
+			<string>颜色 3 · 紫</string>
+			<key>key</key>
+			<string>color3</string>
+			<key>default</key>
+			<string>#AD4DF5</string>
+			<key>defaults</key>
+			<string>com.minis.lockscreengradientclock</string>
+			<key>action</key>
+			<string>chooseColor:</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSButtonCell</string>
+			<key>label</key>
+			<string>颜色 4 · 粉</string>
+			<key>key</key>
+			<string>color4</string>
+			<key>default</key>
+			<string>#F950B0</string>
+			<key>defaults</key>
+			<string>com.minis.lockscreengradientclock</string>
+			<key>action</key>
+			<string>chooseColor:</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSButtonCell</string>
+			<key>label</key>
+			<string>颜色 5 · 橙</string>
+			<key>key</key>
+			<string>color5</string>
+			<key>default</key>
+			<string>#FFBD61</string>
+			<key>defaults</key>
+			<string>com.minis.lockscreengradientclock</string>
+			<key>action</key>
+			<string>chooseColor:</string>
 		</dict>
 		<dict>
 			<key>cell</key>
@@ -49,46 +113,108 @@
 			<string>direction</string>
 			<key>default</key>
 			<integer>0</integer>
+			<key>defaults</key>
+			<string>com.minis.lockscreengradientclock</string>
 			<key>validTitles</key>
 			<array>
-				<string>左→右</string>
-				<string>上→下</string>
+				<string>水平</string>
+				<string>垂直</string>
+				<string>对角</string>
 			</array>
 			<key>validValues</key>
 			<array>
 				<integer>0</integer>
 				<integer>1</integer>
+				<integer>2</integer>
 			</array>
-			<key>defaults</key>
-			<string>com.minis.lockscreengradientclock</string>
 		</dict>
 		<dict>
 			<key>cell</key>
 			<string>PSSliderCell</string>
 			<key>label</key>
-			<string>不透明度</string>
+			<string>渐变浓度</string>
 			<key>key</key>
 			<string>opacity</string>
 			<key>default</key>
-			<real>1.0</real>
-			<key>min</key>
-			<real>0.1</real>
-			<key>max</key>
-			<real>1.0</real>
+			<real>0.65</real>
 			<key>defaults</key>
 			<string>com.minis.lockscreengradientclock</string>
+			<key>min</key>
+			<real>0.0</real>
+			<key>max</key>
+			<real>1.0</real>
+			<key>showValue</key>
+			<true/>
 		</dict>
 		<dict>
 			<key>cell</key>
 			<string>PSSwitchCell</string>
 			<key>label</key>
-			<string>缓慢流动动画</string>
+			<string>缓慢变色</string>
 			<key>key</key>
 			<string>animate</string>
 			<key>default</key>
 			<false/>
 			<key>defaults</key>
 			<string>com.minis.lockscreengradientclock</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>label</key>
+			<string>兼容模式</string>
+			<key>footerText</key>
+			<string>默认复用原文字遮罩；若原遮罩不可读取，使用相同字体重绘遮罩。浓度越低保留的玻璃透视感越强。</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSSegmentCell</string>
+			<key>label</key>
+			<string>遮罩来源</string>
+			<key>key</key>
+			<string>maskMode</string>
+			<key>default</key>
+			<integer>0</integer>
+			<key>defaults</key>
+			<string>com.minis.lockscreengradientclock</string>
+			<key>validTitles</key>
+			<array>
+				<string>自动</string>
+				<string>同字体重绘</string>
+			</array>
+			<key>validValues</key>
+			<array>
+				<integer>0</integer>
+				<integer>1</integer>
+			</array>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>label</key>
+			<string>严格限定锁屏层级</string>
+			<key>key</key>
+			<string>strictScope</string>
+			<key>default</key>
+			<true/>
+			<key>defaults</key>
+			<string>com.minis.lockscreengradientclock</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>label</key>
+			<string>诊断</string>
+			<key>footerText</key>
+			<string>先亮屏查看一次锁屏时钟，再回到此处诊断。若有时间标签但锁屏范围为 0，可临时关闭严格限定后测试；关闭后可能影响其他时间形态的 Liquidify 标签。</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSButtonCell</string>
+			<key>label</key>
+			<string>读取兼容诊断（可复制）</string>
+			<key>action</key>
+			<string>diagnose</string>
 		</dict>
 	</array>
 </dict>
