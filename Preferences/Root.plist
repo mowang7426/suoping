@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>items</key><array>
+<dict><key>cell</key><string>PSSwitchCell</string><key>label</key><string>启用渐变时间</string><key>key</key><string>enabled</string><key>default</key><true/></dict>
+<dict><key>cell</key><string>PSEditTextCell</string><key>label</key><string>起始颜色</string><key>key</key><string>startColor</string><key>default</key><string>#FFFFFF</string></dict>
+<dict><key>cell</key><string>PSEditTextCell</string><key>label</key><string>结束颜色</string><key>key</key><string>endColor</string><key>default</key><string>#66CCFF</string></dict>
+<dict><key>cell</key><string>PSSegmentCell</string><key>label</key><string>渐变方向</string><key>key</key><string>direction</string><key>default</key><integer>0</integer><key>validTitles</key><array><string>左→右</string><string>上→下</string></array><key>validValues</key><array><integer>0</integer><integer>1</integer></array></dict>
+<dict><key>cell</key><string>PSSliderCell</string><key>label</key><string>不透明度</string><key>key</key><string>opacity</string><key>default</key><real>1</real><key>min</key><real>0.1</real><key>max</key><real>1</real></dict>
+<dict><key>cell</key><string>PSSwitchCell</string><key>label</key><string>缓慢流动动画</string><key>key</key><string>animate</string><key>default</key><false/></dict>
+</array></dict></plist>
