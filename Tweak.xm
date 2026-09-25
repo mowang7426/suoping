@@ -6,6 +6,7 @@
 #import <mach-o/dyld.h>
 #import <math.h>
 #import "LSGCEdgeMath.h"
+#import "LSGCGradientMath.h"
 
 // An optional companion: never patch, replace or distribute Liquidify binaries.
 extern "C" void MSHookMessageEx(Class, SEL, IMP, IMP *);
@@ -56,7 +57,7 @@ static CGFloat Clamp(CGFloat x, CGFloat lo, CGFloat hi) {
 }
 static void LoadConfig(void) {
     CFPreferencesAppSynchronize((__bridge CFStringRef)Domain);
-    NSMutableDictionary *values=[@{@"enabled":@YES,@"color1":@"#39D6ED",@"color2":@"#4D7CFF",@"color3":@"#AD4DF5",@"color4":@"#F950B0",@"color5":@"#FFBD61",@"direction":@0,@"opacity":@0.65,@"animate":@NO,@"strictScope":@YES,@"maskMode":@0,@"glassBlend":@YES,@"glassTint":@0.32,@"edgeEnabled":@NO,@"edgePalette":@0,@"edgeCore":@0.22,@"edgeStrength":@0.65,@"edgeWidth":@1.5,@"edgeHighlight":@0.35,@"edgeReveal":@NO} mutableCopy];
+    NSMutableDictionary *values=[@{@"enabled":@YES,@"color1":@"#39D6ED",@"color2":@"#4D7CFF",@"color3":@"#AD4DF5",@"color4":@"#F950B0",@"color5":@"#FFBD61",@"direction":@0,@"opacity":@0.65,@"animate":@NO,@"strictScope":@YES,@"maskMode":@0,@"glassBlend":@YES,@"glassTint":@0.32,@"edgeEnabled":@NO,@"edgePalette":@0,@"edgeCore":@0.22,@"edgeStrength":@0.65,@"edgeWidth":@1.5,@"edgeHighlight":@0.35,@"edgeReveal":@NO,@"customAngleEnabled":@NO,@"gradientAngle":@0,@"customStopsEnabled":@NO,@"stop1":@0,@"stop2":@0.25,@"stop3":@0.5,@"stop4":@0.75,@"stop5":@1,@"reverseColors":@NO,@"independentEdges":@NO,@"edgeColor1":@"#D0FAFF",@"edgeColor2":@"#B39CFF",@"edgeColor3":@"#F7A9DD"} mutableCopy];
     for (NSString *key in values.allKeys) {
         id value=CFBridgingRelease(CFPreferencesCopyAppValue((__bridge CFStringRef)key,(__bridge CFStringRef)Domain));
         if (value) values[key]=value;
@@ -296,7 +297,16 @@ static void ApplyEdges(LSGCState *s,CALayer *host) {
     MatchGeometry(s.edgeMask,s.mask); MatchGeometry(s.edgeBevel,s.mask);
     NSInteger preset=[Config[@"edgePalette"] integerValue];
     NSArray *colors;
-    if (preset==2) colors=s.gradient.colors;
+    if ([Config[@"independentEdges"] boolValue]) {
+        NSMutableArray *custom=[NSMutableArray array];
+        NSArray *fallback=@[@"#D0FAFF",@"#B39CFF",@"#F7A9DD"];
+        for (NSUInteger i=0;i<3;i++) {
+            NSString *key=[NSString stringWithFormat:@"edgeColor%lu",(unsigned long)i+1];
+            UIColor *c=Color(Config[key],Color(fallback[i],UIColor.whiteColor));
+            [custom addObject:(__bridge id)c.CGColor];
+        }
+        colors=custom;
+    } else if (preset==2) colors=s.gradient.colors;
     else {
         NSArray *hex=preset==1 ? @[@"#FFF1DB",@"#F7B2CB",@"#E1B7FF",@"#FFD296"] :
                                 @[@"#D0FAFF",@"#72CFFB",@"#B39CFF",@"#F7A9DD"];
@@ -386,6 +396,12 @@ static void Apply(UILabel *label) {
         s.gradient.startPoint=direction==1 ? CGPointMake(.5,0) : CGPointMake(0,.5);
         s.gradient.endPoint=direction==1 ? CGPointMake(.5,1) : CGPointMake(1,.5);
         if (direction==2) { s.gradient.startPoint=CGPointMake(0,0); s.gradient.endPoint=CGPointMake(1,1); }
+        if ([Config[@"customAngleEnabled"] boolValue]) {
+            double endpoints[4];
+            LSGCGradientEndpoints([Config[@"gradientAngle"] doubleValue],host.bounds.size.width,host.bounds.size.height,endpoints);
+            s.gradient.startPoint=CGPointMake(endpoints[0],endpoints[1]);
+            s.gradient.endPoint=CGPointMake(endpoints[2],endpoints[3]);
+        }
         if (s.revision!=Revision) {
             NSArray *defaults=@[@"#39D6ED",@"#4D7CFF",@"#AD4DF5",@"#F950B0",@"#FFBD61"];
             NSMutableArray *colors=[NSMutableArray array];
@@ -394,7 +410,16 @@ static void Apply(UILabel *label) {
                 UIColor *c=Color(Config[key],Color(defaults[i],UIColor.whiteColor));
                 [colors addObject:(__bridge id)c.CGColor];
             }
+            if ([Config[@"reverseColors"] boolValue]) colors=[[[colors reverseObjectEnumerator] allObjects] mutableCopy];
             s.gradient.colors=colors; s.gradient.locations=@[@0,@0.25,@0.5,@0.75,@1];
+            if ([Config[@"customStopsEnabled"] boolValue]) {
+                double input[5],output[5];
+                for (NSUInteger i=0;i<5;i++) input[i]=[Config[[NSString stringWithFormat:@"stop%lu",(unsigned long)i+1]] doubleValue];
+                LSGCOrderedStops(input,output);
+                NSMutableArray *locations=[NSMutableArray array];
+                for (NSUInteger i=0;i<5;i++) [locations addObject:@(output[i])];
+                s.gradient.locations=locations;
+            }
             [s.gradient removeAllAnimations];
             if ([Config[@"animate"] boolValue]) {
                 NSMutableArray *reverse=[NSMutableArray arrayWithArray:[[colors reverseObjectEnumerator] allObjects]];
@@ -479,7 +504,7 @@ static void WriteDiagnostics(void) {
             [details addObject:[NSString stringWithFormat:@"时间形态=%@ 锁屏范围=%@ 可见=%@\n模式=%@\n%@",time?@"是":@"否",lock?@"是":@"否",Visible(label)?@"是":@"否",s.maskMode?:@"尚未渲染",[chain componentsJoinedByString:@" > "]]];
         }
     }
-    NSString *report=[NSString stringWithFormat:@"兼容层 1.3.0\n类已加载：%@\nHook 已安装：%@\n玻璃标签：%lu\n时间标签：%lu\n锁屏范围命中：%lu\n已附加渐变：%lu\n开关：%@\n\n%@",
+    NSString *report=[NSString stringWithFormat:@"兼容层 1.4.0\n类已加载：%@\nHook 已安装：%@\n玻璃标签：%lu\n时间标签：%lu\n锁屏范围命中：%lu\n已附加渐变：%lu\n开关：%@\n\n%@",
         GlassClass?@"是":@"否",Hooked?@"是":@"否",(unsigned long)Labels.allObjects.count,(unsigned long)clocks,(unsigned long)scoped,(unsigned long)active,[Config[@"enabled"] boolValue]?@"开":@"关",[details componentsJoinedByString:@"\n\n"]];
     CFPreferencesSetAppValue(CFSTR("diagnosticReport"),(__bridge CFStringRef)report,(__bridge CFStringRef)Domain);
     CFPreferencesAppSynchronize((__bridge CFStringRef)Domain);
