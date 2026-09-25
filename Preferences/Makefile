@@ -5,7 +5,7 @@ include $(THEOS)/makefiles/common.mk
 
 BUNDLE_NAME = LockScreenGradientClockPrefs
 LockScreenGradientClockPrefs_FILES = LSGCRootListController.m
-LockScreenGradientClockPrefs_FRAMEWORKS = UIKit
+LockScreenGradientClockPrefs_FRAMEWORKS = UIKit CoreFoundation
 LockScreenGradientClockPrefs_PRIVATE_FRAMEWORKS = Preferences
 LockScreenGradientClockPrefs_INSTALL_PATH = /Library/PreferenceBundles
 LockScreenGradientClockPrefs_CFLAGS = -fobjc-arc
