@@ -73,6 +73,13 @@ static void Reply(CFNotificationCenterRef center, void *observer, CFStringRef na
     [alert addAction:[UIAlertAction actionWithTitle:@"关闭" style:UIAlertActionStyleCancel handler:nil]];
     [self presentViewController:alert animated:YES completion:nil];
 }
+- (void)resetEdges {
+    NSArray *keys=@[@"edgeEnabled",@"edgePalette",@"edgeCore",@"edgeStrength",@"edgeWidth",@"edgeHighlight",@"edgeReveal"];
+    for (NSString *key in keys) CFPreferencesSetAppValue((__bridge CFStringRef)key,NULL,Domain);
+    CFPreferencesAppSynchronize(Domain);
+    CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),Changed,NULL,NULL,true);
+    [self reloadSpecifiers];
+}
 - (void)diagnose {
     if (self.waiting) return;
     self.waiting=YES;
