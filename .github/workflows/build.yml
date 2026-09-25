@@ -1,30 +1,94 @@
-name: Build tweak
-on: [push, workflow_dispatch]
+name: Build LockScreenGradientClock
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+
 jobs:
   build:
-    runs-on: macos-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        scheme: [rootless, roothide]
-    env:
-      THEOS: ${{ github.workspace }}/theos
+    runs-on: macos-14
+
     steps:
-      - uses: actions/checkout@v4
-      - name: Install Theos
-        shell: bash
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: brew install make dpkg ldid xz
+
+      - name: Install RootHide Theos
         run: |
-          git clone --recursive --depth 1 https://github.com/theos/theos.git "$THEOS"
-          echo "THEOS=$THEOS" >> "$GITHUB_ENV"
-          brew install ldid
-      - name: Verify Theos
+          set -e
+          rm -rf "$HOME/theos"
+          git clone --recursive https://github.com/roothide/theos.git "$HOME/theos"
+
+      - name: Set Theos environment
         run: |
+          echo "THEOS=$HOME/theos" >> "$GITHUB_ENV"
+          echo "THEOS_MAKE_PATH=$HOME/theos/makefiles" >> "$GITHUB_ENV"
+          echo "$HOME/theos/bin" >> "$GITHUB_PATH"
+
+      - name: Install iPhoneOS 16.5 SDK
+        run: |
+          set -e
+          rm -rf /tmp/theos-sdks
+          mkdir -p "$HOME/theos/sdks"
+          git clone --depth=1 --filter=blob:none --sparse \
+            https://github.com/theos/sdks.git /tmp/theos-sdks
+          cd /tmp/theos-sdks
+          git sparse-checkout set iPhoneOS16.5.sdk
+          cp -R iPhoneOS16.5.sdk "$HOME/theos/sdks/"
+
+      - name: Verify build environment
+        run: |
+          set -e
           test -f "$THEOS/makefiles/common.mk"
           test -f "$THEOS/makefiles/tweak.mk"
-      - name: Build
-        run: make package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=${{ matrix.scheme }} THEOS="$THEOS"
-      - uses: actions/upload-artifact@v4
+          test -f "$THEOS/makefiles/aggregate.mk"
+          test -d "$THEOS/sdks/iPhoneOS16.5.sdk"
+          echo "THEOS=$THEOS"
+          xcrun --version
+
+      - name: Verify package metadata
+        run: |
+          set -e
+          grep -E '^(Package|Name|Version|Depends):' control
+
+      - name: Build Rootless
+        run: |
+          set -e
+          make clean || true
+          rm -rf packages
+          THEOS_PACKAGE_SCHEME=rootless make package FINALPACKAGE=1
+          mkdir -p build
+          deb=$(find packages -maxdepth 1 -type f -name '*.deb' | head -n 1)
+          test -n "$deb"
+          cp "$deb" build/LockScreenGradientClock-rootless.deb
+
+      - name: Build Roothide
+        run: |
+          set -e
+          make clean || true
+          rm -rf packages
+          THEOS_PACKAGE_SCHEME=roothide make package FINALPACKAGE=1
+          deb=$(find packages -maxdepth 1 -type f -name '*.deb' | head -n 1)
+          test -n "$deb"
+          cp "$deb" build/LockScreenGradientClock-roothide.deb
+
+      - name: Verify packages
+        run: |
+          set -e
+          ls -lh build/*.deb
+          for deb in build/*.deb; do
+            echo "===== $deb ====="
+            dpkg-deb --info "$deb"
+            dpkg-deb --contents "$deb" | grep -E \
+              'LockScreenGradientClock|PreferenceBundles|PreferenceLoader' || true
+          done
+
+      - name: Upload DEB packages
+        uses: actions/upload-artifact@v4
         with:
-          name: LockScreenGradientClock-${{ matrix.scheme }}
-          path: packages/*.deb
+          name: LockScreenGradientClock
+          path: build/*.deb
           if-no-files-found: error
