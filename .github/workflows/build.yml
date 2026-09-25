@@ -4,17 +4,27 @@ jobs:
   build:
     runs-on: macos-latest
     strategy:
+      fail-fast: false
       matrix:
         scheme: [rootless, roothide]
+    env:
+      THEOS: ${{ github.workspace }}/theos
     steps:
       - uses: actions/checkout@v4
       - name: Install Theos
+        shell: bash
         run: |
-          git clone --recursive https://github.com/theos/theos.git $THEOS
+          git clone --recursive --depth 1 https://github.com/theos/theos.git "$THEOS"
+          echo "THEOS=$THEOS" >> "$GITHUB_ENV"
           brew install ldid
+      - name: Verify Theos
+        run: |
+          test -f "$THEOS/makefiles/common.mk"
+          test -f "$THEOS/makefiles/tweak.mk"
       - name: Build
-        run: make package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=${{ matrix.scheme }}
+        run: make package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=${{ matrix.scheme }} THEOS="$THEOS"
       - uses: actions/upload-artifact@v4
         with:
           name: LockScreenGradientClock-${{ matrix.scheme }}
           path: packages/*.deb
+          if-no-files-found: error
