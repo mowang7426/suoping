@@ -1,4 +1,4 @@
-THEOS ?= /opt/theos
+THEOS ?= $(CURDIR)/../theos
 TARGET := iphone:clang:latest:15.0
 include $(THEOS)/makefiles/common.mk
 
