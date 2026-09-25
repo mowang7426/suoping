@@ -30,6 +30,44 @@
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>label</key>
+			<string>液态玻璃染色</string>
+			<key>footerText</key>
+			<string>保留原插件的折射与高光，降低文字边缘染色。此模式使用独立的玻璃染色浓度，不受旧版渐变浓度影响；不会为原本不透明的时钟凭空生成真实折射。</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>label</key>
+			<string>玻璃融合模式</string>
+			<key>key</key>
+			<string>glassBlend</string>
+			<key>default</key>
+			<true/>
+			<key>defaults</key>
+			<string>com.minis.lockscreengradientclock</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSSliderCell</string>
+			<key>label</key>
+			<string>玻璃染色浓度</string>
+			<key>key</key>
+			<string>glassTint</string>
+			<key>default</key>
+			<real>0.32</real>
+			<key>defaults</key>
+			<string>com.minis.lockscreengradientclock</string>
+			<key>min</key>
+			<real>0.0</real>
+			<key>max</key>
+			<real>0.65</real>
+			<key>showValue</key>
+			<true/>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>label</key>
 			<string>五色渐变</string>
 			<key>footerText</key>
 			<string>点击颜色项打开系统选色器，颜色按从左到右排列。</string>
@@ -132,7 +170,7 @@
 			<key>cell</key>
 			<string>PSSliderCell</string>
 			<key>label</key>
-			<string>渐变浓度</string>
+			<string>普通模式渐变浓度</string>
 			<key>key</key>
 			<string>opacity</string>
 			<key>default</key>
