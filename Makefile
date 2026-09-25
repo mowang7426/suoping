@@ -8,7 +8,8 @@ include $(THEOS)/makefiles/common.mk
 TWEAK_NAME = LockScreenGradientClock
 LockScreenGradientClock_FILES = Tweak.xm
 LockScreenGradientClock_CFLAGS = -fobjc-arc
-LockScreenGradientClock_FRAMEWORKS = UIKit QuartzCore CoreGraphics
+LockScreenGradientClock_FRAMEWORKS = UIKit QuartzCore CoreGraphics CoreFoundation
+LockScreenGradientClock_LIBRARIES = substrate
 
 SUBPROJECTS += Preferences
 
