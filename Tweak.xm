@@ -51,7 +51,7 @@ static CGFloat Clamp(CGFloat x, CGFloat lo, CGFloat hi) {
 }
 static void LoadConfig(void) {
     CFPreferencesAppSynchronize((__bridge CFStringRef)Domain);
-    NSMutableDictionary *values=[@{@"enabled":@YES,@"color1":@"#39D6ED",@"color2":@"#4D7CFF",@"color3":@"#AD4DF5",@"color4":@"#F950B0",@"color5":@"#FFBD61",@"direction":@0,@"opacity":@0.65,@"animate":@NO,@"strictScope":@YES,@"maskMode":@0} mutableCopy];
+    NSMutableDictionary *values=[@{@"enabled":@YES,@"color1":@"#39D6ED",@"color2":@"#4D7CFF",@"color3":@"#AD4DF5",@"color4":@"#F950B0",@"color5":@"#FFBD61",@"direction":@0,@"opacity":@0.65,@"animate":@NO,@"strictScope":@YES,@"maskMode":@0,@"glassBlend":@YES,@"glassTint":@0.32} mutableCopy];
     for (NSString *key in values.allKeys) {
         id value=CFBridgingRelease(CFPreferencesCopyAppValue((__bridge CFStringRef)key,(__bridge CFStringRef)Domain));
         if (value) values[key]=value;
@@ -169,6 +169,55 @@ static UIImage *SnapshotText(UILabel *label) {
     }];
     return HasAlpha(image) ? image : nil;
 }
+// Preserve original highlights by fading tint at the glyph boundary.
+// This edits only our copied mask, never Liquidify's own mask or filters.
+static UIImage *GlassTintMask(UIImage *image) {
+    if (!image.CGImage) return image;
+    size_t w=CGImageGetWidth(image.CGImage), h=CGImageGetHeight(image.CGImage);
+    if (!w || !h || w>4096 || h>4096) return image;
+    size_t bytes=w*h*4;
+    unsigned char *pixels=(unsigned char *)calloc(bytes,1);
+    unsigned char *alpha=(unsigned char *)malloc(w*h);
+    if (!pixels || !alpha) { free(pixels); free(alpha); return image; }
+    CGColorSpaceRef space=CGColorSpaceCreateDeviceRGB();
+    CGContextRef ctx=CGBitmapContextCreate(pixels,w,h,8,w*4,space,kCGImageAlphaPremultipliedLast|kCGBitmapByteOrder32Big);
+    CGColorSpaceRelease(space);
+    if (!ctx) { free(pixels); free(alpha); return image; }
+    CGContextDrawImage(ctx,CGRectMake(0,0,w,h),image.CGImage);
+    for (size_t i=0;i<w*h;i++) alpha[i]=pixels[i*4+3];
+    size_t d=(size_t)MAX(1,lround(image.scale*1.2));
+    for (size_t y=0;y<h;y++) for (size_t x=0;x<w;x++) {
+        size_t i=y*w+x; unsigned char a=alpha[i];
+        unsigned char inner=0;
+        if (x>=d && y>=d && x+d<w && y+d<h) {
+            inner=MIN(MIN(alpha[i-d],alpha[i+d]),MIN(alpha[i-d*w],alpha[i+d*w]));
+        }
+        unsigned char out=(unsigned char)lround(a*(0.15+0.85*inner/255.0));
+        pixels[i*4]=pixels[i*4+1]=pixels[i*4+2]=pixels[i*4+3]=out;
+    }
+    CGImageRef result=CGBitmapContextCreateImage(ctx);
+    UIImage *output=result ? [UIImage imageWithCGImage:result scale:image.scale orientation:image.imageOrientation] : image;
+    if (result) CGImageRelease(result);
+    CGContextRelease(ctx); free(pixels); free(alpha);
+    return output;
+}
+// Only reorder against an actual sibling; never lift a glass container above its backdrop.
+static void PlaceTint(CALayer *host, CAGradientLayer *tint, UILabel *label, BOOL glass) {
+    UIView *rim=ReadObject(label,@"rimView");
+    CALayer *edge=[rim isKindOfClass:UIView.class] ? rim.layer : nil;
+    if (glass && edge.superlayer==host && !rim.hidden && rim.alpha>0.01) {
+        tint.zPosition=edge.zPosition;
+        NSArray *layers=host.sublayers;
+        NSUInteger ti=[layers indexOfObjectIdenticalTo:tint], ei=[layers indexOfObjectIdenticalTo:edge];
+        if (tint.superlayer!=host || ti==NSNotFound || ti+1!=ei) {
+            [tint removeFromSuperlayer]; [host insertSublayer:tint below:edge];
+        }
+    } else {
+        tint.zPosition=100;
+        if (tint.superlayer!=host) { [tint removeFromSuperlayer]; [host addSublayer:tint]; }
+    }
+}
+
 static void RemoveOverlay(UILabel *label) {
     LSGCState *s=objc_getAssociatedObject(label,&StateKey);
     [s.gradient removeFromSuperlayer]; [s.gradient removeAllAnimations];
@@ -203,6 +252,7 @@ static void Apply(UILabel *label) {
             UIImage *image=native ? SnapshotMask(source) : nil;
             if (!image) { native=NO; host=label.layer; image=SnapshotText(label); }
             if (!image) { RemoveOverlay(label); s.maskMode=@"遮罩为空"; return; }
+            if ([Config[@"glassBlend"] boolValue]) image=GlassTintMask(image);
             [CATransaction begin]; [CATransaction setDisableActions:YES];
             s.mask.contents=(__bridge id)image.CGImage;
             s.mask.contentsScale=image.scale;
@@ -222,7 +272,8 @@ static void Apply(UILabel *label) {
         [CATransaction begin]; [CATransaction setDisableActions:YES];
         s.gradient.bounds=host.bounds;
         s.gradient.position=CGPointMake(CGRectGetMidX(host.bounds),CGRectGetMidY(host.bounds));
-        s.gradient.opacity=Clamp([Config[@"opacity"] doubleValue],0,1);
+        BOOL glass=[Config[@"glassBlend"] boolValue];
+        s.gradient.opacity=glass ? Clamp([Config[@"glassTint"] doubleValue],0,0.65) : Clamp([Config[@"opacity"] doubleValue],0,1);
         NSInteger direction=[Config[@"direction"] integerValue];
         s.gradient.startPoint=direction==1 ? CGPointMake(.5,0) : CGPointMake(0,.5);
         s.gradient.endPoint=direction==1 ? CGPointMake(.5,1) : CGPointMake(1,.5);
@@ -245,7 +296,7 @@ static void Apply(UILabel *label) {
             }
             s.revision=Revision;
         }
-        if (s.gradient.superlayer!=host) { [s.gradient removeFromSuperlayer]; [host addSublayer:s.gradient]; }
+        PlaceTint(host,s.gradient,label,glass);
         [CATransaction commit];
     } @catch (NSException *exception) {
         RemoveOverlay(label); s.maskMode=[@"兼容异常：" stringByAppendingString:exception.name];
@@ -319,7 +370,7 @@ static void WriteDiagnostics(void) {
             [details addObject:[NSString stringWithFormat:@"时间形态=%@ 锁屏范围=%@ 可见=%@\n模式=%@\n%@",time?@"是":@"否",lock?@"是":@"否",Visible(label)?@"是":@"否",s.maskMode?:@"尚未渲染",[chain componentsJoinedByString:@" > "]]];
         }
     }
-    NSString *report=[NSString stringWithFormat:@"兼容层 1.1.0\n类已加载：%@\nHook 已安装：%@\n玻璃标签：%lu\n时间标签：%lu\n锁屏范围命中：%lu\n已附加渐变：%lu\n开关：%@\n\n%@",
+    NSString *report=[NSString stringWithFormat:@"兼容层 1.2.0\n类已加载：%@\nHook 已安装：%@\n玻璃标签：%lu\n时间标签：%lu\n锁屏范围命中：%lu\n已附加渐变：%lu\n开关：%@\n\n%@",
         GlassClass?@"是":@"否",Hooked?@"是":@"否",(unsigned long)Labels.allObjects.count,(unsigned long)clocks,(unsigned long)scoped,(unsigned long)active,[Config[@"enabled"] boolValue]?@"开":@"关",[details componentsJoinedByString:@"\n\n"]];
     CFPreferencesSetAppValue(CFSTR("diagnosticReport"),(__bridge CFStringRef)report,(__bridge CFStringRef)Domain);
     CFPreferencesAppSynchronize((__bridge CFStringRef)Domain);
