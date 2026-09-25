@@ -1,3 +1,4 @@
+THEOS ?= /opt/theos
 TARGET := iphone:clang:latest:15.0
 INSTALL_TARGET_PROCESSES = SpringBoard
 
