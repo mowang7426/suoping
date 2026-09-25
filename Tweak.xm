@@ -50,6 +50,13 @@ static BOOL LSGCIsClock(UIView *v) {
 
 %ctor {
     [[NSNotificationCenter defaultCenter] addObserverForName:NSUserDefaultsDidChangeNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n){
-        dispatch_async(dispatch_get_main_queue(), ^{ for (UIWindow *w in UIApplication.sharedApplication.windows) { [w.rootViewController.view setNeedsLayout]; } });
+        dispatch_async(dispatch_get_main_queue(), ^{
+            for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
+                if (![scene isKindOfClass:UIWindowScene.class]) continue;
+                for (UIWindow *window in ((UIWindowScene *)scene).windows) {
+                    [window.rootViewController.view setNeedsLayout];
+                }
+            }
+        });
     }];
 }
