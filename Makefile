@@ -8,7 +8,6 @@ TWEAK_NAME = LockScreenGradientClock
 LockScreenGradientClock_FILES = Tweak.xm
 LockScreenGradientClock_CFLAGS = -fobjc-arc
 LockScreenGradientClock_FRAMEWORKS = UIKit QuartzCore CoreGraphics
-LockScreenGradientClock_PRIVATE_FRAMEWORKS = SpringBoardFoundation
 
 SUBPROJECTS += Preferences
 
