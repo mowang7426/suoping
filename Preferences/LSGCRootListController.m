@@ -4,6 +4,98 @@
 #import <CoreFoundation/CoreFoundation.h>
 #import <math.h>
 
+#import <Preferences/PSTableCell.h>
+
+static NSString *const LSGCSwatchesChanged=@"LSGC.SwatchesChanged";
+@protocol LSGCSwatchOwner <NSObject>
+- (void)chooseColor:(PSSpecifier *)specifier;
+- (id)readPreferenceValue:(PSSpecifier *)specifier;
+@end
+
+@interface LSGCColorStripCell : PSTableCell
+@property(nonatomic,weak) id<LSGCSwatchOwner> pickerOwner;
+@property(nonatomic,strong) NSArray<PSSpecifier *> *colorSpecs;
+@property(nonatomic,strong) UIStackView *strip;
+@property(nonatomic,strong) NSMutableArray<UIButton *> *buttons;
+@property(nonatomic,strong) NSMutableArray<UIView *> *dots;
+- (void)refreshColors;
+@end
+@implementation LSGCColorStripCell
+- (instancetype)initWithStyle:(UITableViewCellStyle)style reuseIdentifier:(NSString *)identifier specifier:(PSSpecifier *)specifier {
+    self=[super initWithStyle:style reuseIdentifier:identifier specifier:specifier];
+    if (self) {
+        self.selectionStyle=UITableViewCellSelectionStyleNone;
+        self.accessoryType=UITableViewCellAccessoryNone;
+        self.textLabel.text=nil; self.detailTextLabel.text=nil;
+        self.pickerOwner=(id<LSGCSwatchOwner>)specifier.target;
+        self.colorSpecs=[specifier propertyForKey:@"lsgcColorSpecifiers"];
+        self.buttons=[NSMutableArray array]; self.dots=[NSMutableArray array];
+        self.strip=[[UIStackView alloc] init];
+        self.strip.axis=UILayoutConstraintAxisHorizontal;
+        self.strip.distribution=UIStackViewDistributionFillEqually;
+        self.strip.alignment=UIStackViewAlignmentFill;
+        self.strip.semanticContentAttribute=UISemanticContentAttributeForceLeftToRight;
+        self.strip.translatesAutoresizingMaskIntoConstraints=NO;
+        [self.contentView addSubview:self.strip];
+        [NSLayoutConstraint activateConstraints:@[
+            [self.strip.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor constant:16],
+            [self.strip.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor constant:-16],
+            [self.strip.centerYAnchor constraintEqualToAnchor:self.contentView.centerYAnchor],
+            [self.strip.heightAnchor constraintEqualToConstant:52]
+        ]];
+        for (NSUInteger i=0;i<self.colorSpecs.count;i++) {
+            UIButton *button=[UIButton buttonWithType:UIButtonTypeCustom];
+            button.tag=(NSInteger)i; button.accessibilityLabel=[NSString stringWithFormat:@"渐变颜色 %lu",(unsigned long)i+1];
+            button.accessibilityHint=@"打开系统选色器";
+            [button addTarget:self action:@selector(tapped:) forControlEvents:UIControlEventTouchUpInside];
+            UIView *dot=[[UIView alloc] init]; dot.userInteractionEnabled=NO; dot.isAccessibilityElement=NO;
+            dot.layer.cornerRadius=19; dot.layer.borderWidth=1.5;
+            dot.translatesAutoresizingMaskIntoConstraints=NO;
+            [button addSubview:dot];
+            [NSLayoutConstraint activateConstraints:@[
+                [dot.widthAnchor constraintEqualToConstant:38], [dot.heightAnchor constraintEqualToConstant:38],
+                [dot.centerXAnchor constraintEqualToAnchor:button.centerXAnchor],
+                [dot.centerYAnchor constraintEqualToAnchor:button.centerYAnchor]
+            ]];
+            [self.strip addArrangedSubview:button]; [self.buttons addObject:button]; [self.dots addObject:dot];
+        }
+        [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(colorsChanged:) name:LSGCSwatchesChanged object:nil];
+        [self refreshColors];
+    }
+    return self;
+}
+- (void)dealloc { [[NSNotificationCenter defaultCenter] removeObserver:self]; }
+- (void)colorsChanged:(NSNotification *)note { (void)note; [self refreshColors]; }
+- (void)refreshCellContentsWithSpecifier:(PSSpecifier *)specifier {
+    [super refreshCellContentsWithSpecifier:specifier];
+    self.textLabel.text=nil; self.detailTextLabel.text=nil;
+    self.pickerOwner=(id<LSGCSwatchOwner>)specifier.target;
+    self.colorSpecs=[specifier propertyForKey:@"lsgcColorSpecifiers"];
+    [self refreshColors];
+}
+- (void)didMoveToWindow { [super didMoveToWindow]; if (self.window) [self refreshColors]; }
+- (void)traitCollectionDidChange:(UITraitCollection *)previous {
+    [super traitCollectionDidChange:previous]; [self refreshColors];
+}
+- (void)refreshColors {
+    for (NSUInteger i=0;i<self.dots.count && i<self.colorSpecs.count;i++) {
+        PSSpecifier *spec=self.colorSpecs[i];
+        id stored=[self.pickerOwner readPreferenceValue:spec];
+        NSString *hex=[stored isKindOfClass:NSString.class] ? stored : [spec propertyForKey:@"default"];
+        NSPredicate *valid=[NSPredicate predicateWithFormat:@"SELF MATCHES %@",@"#[0-9A-Fa-f]{6}"];
+        if (![valid evaluateWithObject:hex]) hex=[spec propertyForKey:@"default"];
+        unsigned value=0; [[NSScanner scannerWithString:[hex substringFromIndex:1]] scanHexInt:&value];
+        self.dots[i].backgroundColor=[UIColor colorWithRed:((value>>16)&255)/255.0 green:((value>>8)&255)/255.0 blue:(value&255)/255.0 alpha:1];
+        self.dots[i].layer.borderColor=[UIColor.labelColor colorWithAlphaComponent:0.25].CGColor;
+        self.buttons[i].accessibilityValue=hex;
+    }
+}
+- (void)tapped:(UIButton *)sender {
+    NSUInteger index=(NSUInteger)sender.tag;
+    if (index<self.colorSpecs.count) [self.pickerOwner chooseColor:self.colorSpecs[index]];
+}
+@end
+
 static CFStringRef const Domain=CFSTR("com.minis.lockscreengradientclock");
 static CFStringRef const Changed=CFSTR("com.minis.lockscreengradientclock/changed");
 static CFStringRef const Replied=CFSTR("com.minis.lockscreengradientclock/diagnosed");
@@ -22,7 +114,28 @@ static void Reply(CFNotificationCenterRef center, void *observer, CFStringRef na
 }
 @implementation LSGCRootListController
 - (NSArray *)specifiers {
-    if (!_specifiers) _specifiers=[self loadSpecifiersFromPlistName:@"Root" target:self];
+    if (!_specifiers) {
+        NSMutableArray *loaded=[self loadSpecifiersFromPlistName:@"Root" target:self];
+        NSArray *keys=@[@"color1",@"color2",@"color3",@"color4",@"color5"];
+        NSMutableArray *colors=[NSMutableArray array];
+        for (NSString *key in keys) for (PSSpecifier *spec in loaded) {
+            if ([[spec propertyForKey:@"key"] isEqual:key]) { [colors addObject:spec]; break; }
+        }
+        if (colors.count==5) {
+            PSSpecifier *strip=[PSSpecifier preferenceSpecifierNamed:@"" target:self set:NULL get:NULL detail:nil cell:PSStaticTextCell edit:nil];
+            [strip setProperty:LSGCColorStripCell.class forKey:@"cellClass"];
+            [strip setProperty:@76 forKey:@"height"];
+            [strip setProperty:colors forKey:@"lsgcColorSpecifiers"];
+            NSMutableArray *display=[NSMutableArray array];
+            BOOL inserted=NO;
+            for (PSSpecifier *spec in loaded) {
+                if ([colors containsObject:spec]) {
+                    if (!inserted) { [display addObject:strip]; inserted=YES; }
+                } else [display addObject:spec];
+            }
+            _specifiers=display;
+        } else _specifiers=loaded;
+    }
     return _specifiers;
 }
 - (void)viewDidLoad {
@@ -41,6 +154,7 @@ static void Reply(CFNotificationCenterRef center, void *observer, CFStringRef na
     CFPreferencesSetAppValue((__bridge CFStringRef)key,(__bridge CFPropertyListRef)value,Domain);
     CFPreferencesAppSynchronize(Domain);
     CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),Changed,NULL,NULL,true);
+    [[NSNotificationCenter defaultCenter] postNotificationName:LSGCSwatchesChanged object:nil];
 }
 - (void)setPreferenceValue:(id)value specifier:(PSSpecifier *)specifier {
     [self save:value key:[specifier propertyForKey:@"key"]];
@@ -87,6 +201,7 @@ static void Reply(CFNotificationCenterRef center, void *observer, CFStringRef na
     for (NSString *key in keys) CFPreferencesSetAppValue((__bridge CFStringRef)key,NULL,Domain);
     CFPreferencesAppSynchronize(Domain);
     CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),Changed,NULL,NULL,true);
+    [[NSNotificationCenter defaultCenter] postNotificationName:LSGCSwatchesChanged object:nil];
     [self reloadSpecifiers];
 }
 // Presets contain visual options only. Global enable, scope and mask compatibility
@@ -146,6 +261,7 @@ static void Reply(CFNotificationCenterRef center, void *observer, CFStringRef na
     for (NSString *key in clean) CFPreferencesSetAppValue((__bridge CFStringRef)key,(__bridge CFPropertyListRef)clean[key],Domain);
     CFPreferencesAppSynchronize(Domain);
     CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),Changed,NULL,NULL,true);
+    [[NSNotificationCenter defaultCenter] postNotificationName:LSGCSwatchesChanged object:nil];
     [self reloadSpecifiers];
 }
 - (void)paletteMessage:(NSString *)text {
@@ -235,6 +351,7 @@ static void Reply(CFNotificationCenterRef center, void *observer, CFStringRef na
     for (NSString *key in keys) CFPreferencesSetAppValue((__bridge CFStringRef)key,NULL,Domain);
     CFPreferencesAppSynchronize(Domain);
     CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),Changed,NULL,NULL,true);
+    [[NSNotificationCenter defaultCenter] postNotificationName:LSGCSwatchesChanged object:nil];
     [self reloadSpecifiers];
 }
 
@@ -247,7 +364,7 @@ static void Reply(CFNotificationCenterRef center, void *observer, CFStringRef na
         LSGCRootListController *strong=weak;
         if (strong.waiting) {
             strong.waiting=NO;
-            [strong showMessage:@"SpringBoard 未响应。请确认安装的是 1.4.0，已注销，且允许本插件注入 SpringBoard。此提示不是已成功适配的证明。"];
+            [strong showMessage:@"SpringBoard 未响应。请确认安装的是 1.4.1，已注销，且允许本插件注入 SpringBoard。此提示不是已成功适配的证明。"];
         }
     });
 }
