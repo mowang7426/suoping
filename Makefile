@@ -1,5 +1,6 @@
 THEOS ?= $(CURDIR)/theos
-TARGET := iphone:clang:latest:15.0
+ARCHS = arm64 arm64e
+TARGET := iphone:clang:16.5:15.0
 INSTALL_TARGET_PROCESSES = SpringBoard
 
 include $(THEOS)/makefiles/common.mk
@@ -12,3 +13,4 @@ LockScreenGradientClock_FRAMEWORKS = UIKit QuartzCore CoreGraphics
 SUBPROJECTS += Preferences
 
 include $(THEOS_MAKE_PATH)/tweak.mk
+include $(THEOS_MAKE_PATH)/aggregate.mk
