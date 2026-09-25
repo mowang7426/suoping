@@ -5,6 +5,7 @@
 #import <objc/message.h>
 #import <mach-o/dyld.h>
 #import <math.h>
+#import "LSGCEdgeMath.h"
 
 // An optional companion: never patch, replace or distribute Liquidify binaries.
 extern "C" void MSHookMessageEx(Class, SEL, IMP, IMP *);
@@ -25,6 +26,10 @@ static void Discover(void);
 @interface LSGCState : NSObject
 @property(nonatomic,strong) CAGradientLayer *gradient;
 @property(nonatomic,strong) CALayer *mask;
+@property(nonatomic,strong) CALayer *edgeHost;
+@property(nonatomic,strong) CAGradientLayer *edgeTint;
+@property(nonatomic,strong) CALayer *edgeMask;
+@property(nonatomic,strong) CALayer *edgeBevel;
 @property(nonatomic,copy) NSString *signature;
 @property(nonatomic,copy) NSString *maskMode;
 @property(nonatomic) BOOL busy;
@@ -51,7 +56,7 @@ static CGFloat Clamp(CGFloat x, CGFloat lo, CGFloat hi) {
 }
 static void LoadConfig(void) {
     CFPreferencesAppSynchronize((__bridge CFStringRef)Domain);
-    NSMutableDictionary *values=[@{@"enabled":@YES,@"color1":@"#39D6ED",@"color2":@"#4D7CFF",@"color3":@"#AD4DF5",@"color4":@"#F950B0",@"color5":@"#FFBD61",@"direction":@0,@"opacity":@0.65,@"animate":@NO,@"strictScope":@YES,@"maskMode":@0,@"glassBlend":@YES,@"glassTint":@0.32} mutableCopy];
+    NSMutableDictionary *values=[@{@"enabled":@YES,@"color1":@"#39D6ED",@"color2":@"#4D7CFF",@"color3":@"#AD4DF5",@"color4":@"#F950B0",@"color5":@"#FFBD61",@"direction":@0,@"opacity":@0.65,@"animate":@NO,@"strictScope":@YES,@"maskMode":@0,@"glassBlend":@YES,@"glassTint":@0.32,@"edgeEnabled":@NO,@"edgePalette":@0,@"edgeCore":@0.22,@"edgeStrength":@0.65,@"edgeWidth":@1.5,@"edgeHighlight":@0.35,@"edgeReveal":@NO} mutableCopy];
     for (NSString *key in values.allKeys) {
         id value=CFBridgingRelease(CFPreferencesCopyAppValue((__bridge CFStringRef)key,(__bridge CFStringRef)Domain));
         if (value) values[key]=value;
@@ -218,9 +223,109 @@ static void PlaceTint(CALayer *host, CAGradientLayer *tint, UILabel *label, BOOL
     }
 }
 
+// New effect owns its own layers. Nothing here changes Liquidify's native layers.
+static void ClearEdges(LSGCState *s) {
+    [s.edgeHost removeFromSuperlayer];
+    [s.edgeBevel removeAllAnimations];
+    s.edgeHost=nil; s.edgeTint=nil; s.edgeMask=nil; s.edgeBevel=nil;
+}
+static BOOL PrepareEdges(LSGCState *s,UIImage *image) {
+    if (![Config[@"edgeEnabled"] boolValue]) { ClearEdges(s); return NO; }
+    CGImageRef input=image.CGImage;
+    size_t w=input ? CGImageGetWidth(input) : 0,h=input ? CGImageGetHeight(input) : 0;
+    if (!w || !h || w>4096 || h>4096 || w*h>4194304) { ClearEdges(s); return NO; }
+    size_t count=w*h*4;
+    unsigned char *rgba=(unsigned char *)calloc(count,1);
+    unsigned char *ring=(unsigned char *)calloc(count,1);
+    unsigned char *bevel=(unsigned char *)calloc(count,1);
+    if (!rgba || !ring || !bevel) { free(rgba); free(ring); free(bevel); ClearEdges(s); return NO; }
+    CGColorSpaceRef space=CGColorSpaceCreateDeviceRGB();
+    CGBitmapInfo flags=kCGImageAlphaPremultipliedLast|kCGBitmapByteOrder32Big;
+    CGContextRef source=CGBitmapContextCreate(rgba,w,h,8,w*4,space,flags);
+    CGContextRef ringContext=CGBitmapContextCreate(ring,w,h,8,w*4,space,flags);
+    CGContextRef bevelContext=CGBitmapContextCreate(bevel,w,h,8,w*4,space,flags);
+    CGColorSpaceRelease(space);
+    BOOL valid=source && ringContext && bevelContext;
+    CGImageRef ringImage=NULL,bevelImage=NULL;
+    if (valid) {
+        // CGImage raster output preserves the source orientation. UIKit display maps
+        // the first bitmap row to the top; the pure algorithm uses that same order.
+        CGContextDrawImage(source,CGRectMake(0,0,w,h),input);
+        float radius=(float)(Clamp([Config[@"edgeWidth"] doubleValue],0.5,4)*image.scale);
+        valid=LSGCMakeEdges(rgba,w,h,radius,ring,bevel);
+        if (valid) {
+            ringImage=CGBitmapContextCreateImage(ringContext);
+            bevelImage=CGBitmapContextCreateImage(bevelContext);
+            valid=ringImage && bevelImage;
+        }
+    }
+    if (valid) {
+        if (!s.edgeHost) {
+            s.edgeHost=[CALayer layer]; s.edgeHost.name=@"LSGC.OptionalColorEdges";
+            s.edgeTint=[CAGradientLayer layer]; s.edgeMask=[CALayer layer]; s.edgeBevel=[CALayer layer];
+            s.edgeTint.mask=s.edgeMask;
+            [s.edgeHost addSublayer:s.edgeTint]; [s.edgeHost addSublayer:s.edgeBevel];
+        }
+        s.edgeMask.contents=(__bridge id)ringImage;
+        s.edgeMask.contentsScale=image.scale; s.edgeMask.contentsGravity=kCAGravityResize;
+        s.edgeBevel.contents=(__bridge id)bevelImage;
+        s.edgeBevel.contentsScale=image.scale; s.edgeBevel.contentsGravity=kCAGravityResize;
+    } else ClearEdges(s);
+    if (ringImage) CGImageRelease(ringImage);
+    if (bevelImage) CGImageRelease(bevelImage);
+    if (source) CGContextRelease(source);
+    if (ringContext) CGContextRelease(ringContext);
+    if (bevelContext) CGContextRelease(bevelContext);
+    free(rgba); free(ring); free(bevel);
+    return valid;
+}
+static void MatchGeometry(CALayer *layer,CALayer *reference) {
+    layer.transform=CATransform3DIdentity;
+    layer.bounds=reference.bounds; layer.anchorPoint=reference.anchorPoint;
+    layer.position=reference.position; layer.transform=reference.transform;
+}
+static void ApplyEdges(LSGCState *s,CALayer *host) {
+    if (![Config[@"edgeEnabled"] boolValue]) { ClearEdges(s); return; }
+    if (!s.edgeHost) return;
+    BOOL appearing=s.edgeHost.superlayer==nil;
+    s.edgeHost.bounds=host.bounds;
+    s.edgeHost.position=CGPointMake(CGRectGetMidX(host.bounds),CGRectGetMidY(host.bounds));
+    s.edgeHost.zPosition=s.gradient.zPosition+0.01;
+    s.edgeTint.bounds=host.bounds;
+    s.edgeTint.position=CGPointMake(CGRectGetMidX(host.bounds),CGRectGetMidY(host.bounds));
+    MatchGeometry(s.edgeMask,s.mask); MatchGeometry(s.edgeBevel,s.mask);
+    NSInteger preset=[Config[@"edgePalette"] integerValue];
+    NSArray *colors;
+    if (preset==2) colors=s.gradient.colors;
+    else {
+        NSArray *hex=preset==1 ? @[@"#FFF1DB",@"#F7B2CB",@"#E1B7FF",@"#FFD296"] :
+                                @[@"#D0FAFF",@"#72CFFB",@"#B39CFF",@"#F7A9DD"];
+        NSMutableArray *built=[NSMutableArray array];
+        for (NSString *h in hex) [built addObject:(__bridge id)Color(h,UIColor.whiteColor).CGColor];
+        colors=built;
+    }
+    s.edgeTint.colors=colors;
+    s.edgeTint.startPoint=CGPointMake(0,0); s.edgeTint.endPoint=CGPointMake(1,1);
+    s.edgeTint.opacity=Clamp([Config[@"edgeStrength"] doubleValue],0,1);
+    float intensity=(float)Clamp([Config[@"edgeHighlight"] doubleValue],0,1);
+    s.edgeBevel.opacity=intensity;
+    if (![Config[@"edgeReveal"] boolValue]) [s.edgeBevel removeAllAnimations];
+    if (s.edgeHost.superlayer!=host) {
+        [s.edgeHost removeFromSuperlayer]; [host addSublayer:s.edgeHost];
+    }
+    if (appearing && [Config[@"edgeReveal"] boolValue] && !UIAccessibilityIsReduceMotionEnabled() &&
+        !NSProcessInfo.processInfo.lowPowerModeEnabled && intensity>0) {
+        CAKeyframeAnimation *flash=[CAKeyframeAnimation animationWithKeyPath:@"opacity"];
+        flash.values=@[@0,@(MIN(1,intensity*1.5)),@(intensity)];
+        flash.keyTimes=@[@0,@0.25,@1]; flash.duration=0.9;
+        [s.edgeBevel addAnimation:flash forKey:@"LSGC.EdgeReveal"];
+    }
+}
+
 static void RemoveOverlay(UILabel *label) {
     LSGCState *s=objc_getAssociatedObject(label,&StateKey);
     [s.gradient removeFromSuperlayer]; [s.gradient removeAllAnimations];
+    ClearEdges(s);
     s.signature=nil; s.revision=0;
 }
 static void Apply(UILabel *label) {
@@ -252,6 +357,7 @@ static void Apply(UILabel *label) {
             UIImage *image=native ? SnapshotMask(source) : nil;
             if (!image) { native=NO; host=label.layer; image=SnapshotText(label); }
             if (!image) { RemoveOverlay(label); s.maskMode=@"遮罩为空"; return; }
+            PrepareEdges(s,image);
             if ([Config[@"glassBlend"] boolValue]) image=GlassTintMask(image);
             [CATransaction begin]; [CATransaction setDisableActions:YES];
             s.mask.contents=(__bridge id)image.CGImage;
@@ -274,6 +380,8 @@ static void Apply(UILabel *label) {
         s.gradient.position=CGPointMake(CGRectGetMidX(host.bounds),CGRectGetMidY(host.bounds));
         BOOL glass=[Config[@"glassBlend"] boolValue];
         s.gradient.opacity=glass ? Clamp([Config[@"glassTint"] doubleValue],0,0.65) : Clamp([Config[@"opacity"] doubleValue],0,1);
+        if ([Config[@"edgeEnabled"] boolValue] && s.edgeHost)
+            s.gradient.opacity *= Clamp([Config[@"edgeCore"] doubleValue],0,1);
         NSInteger direction=[Config[@"direction"] integerValue];
         s.gradient.startPoint=direction==1 ? CGPointMake(.5,0) : CGPointMake(0,.5);
         s.gradient.endPoint=direction==1 ? CGPointMake(.5,1) : CGPointMake(1,.5);
@@ -297,6 +405,7 @@ static void Apply(UILabel *label) {
             s.revision=Revision;
         }
         PlaceTint(host,s.gradient,label,glass);
+        ApplyEdges(s,host);
         [CATransaction commit];
     } @catch (NSException *exception) {
         RemoveOverlay(label); s.maskMode=[@"兼容异常：" stringByAppendingString:exception.name];
@@ -370,7 +479,7 @@ static void WriteDiagnostics(void) {
             [details addObject:[NSString stringWithFormat:@"时间形态=%@ 锁屏范围=%@ 可见=%@\n模式=%@\n%@",time?@"是":@"否",lock?@"是":@"否",Visible(label)?@"是":@"否",s.maskMode?:@"尚未渲染",[chain componentsJoinedByString:@" > "]]];
         }
     }
-    NSString *report=[NSString stringWithFormat:@"兼容层 1.2.0\n类已加载：%@\nHook 已安装：%@\n玻璃标签：%lu\n时间标签：%lu\n锁屏范围命中：%lu\n已附加渐变：%lu\n开关：%@\n\n%@",
+    NSString *report=[NSString stringWithFormat:@"兼容层 1.3.0\n类已加载：%@\nHook 已安装：%@\n玻璃标签：%lu\n时间标签：%lu\n锁屏范围命中：%lu\n已附加渐变：%lu\n开关：%@\n\n%@",
         GlassClass?@"是":@"否",Hooked?@"是":@"否",(unsigned long)Labels.allObjects.count,(unsigned long)clocks,(unsigned long)scoped,(unsigned long)active,[Config[@"enabled"] boolValue]?@"开":@"关",[details componentsJoinedByString:@"\n\n"]];
     CFPreferencesSetAppValue(CFSTR("diagnosticReport"),(__bridge CFStringRef)report,(__bridge CFStringRef)Domain);
     CFPreferencesAppSynchronize((__bridge CFStringRef)Domain);
