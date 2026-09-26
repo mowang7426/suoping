@@ -1,6 +1,6 @@
 Package: com.minis.lockscreengradientclock
 Name: LockScreen Gradient Clock
-Version: 1.5.0
+Version: 1.5.1
 Architecture: iphoneos-arm64
 Description: Configurable Lock Screen clock gradient.
 Maintainer: MoWang
