@@ -1,6 +1,16 @@
-# LockScreenGradientClock 1.4.1 — 五色圆点界面修复
+# LockScreenGradientClock 1.5.0 — JSON 导入导出与遮罩修复测试版
 
-## 1.4.1 更新（当前版本）
+## 1.5.0 当前版本
+
+新增配置文件按钮：导出当前全部视觉参数为 JSON，通过分享面板保存到文件；导入 JSON 校验 format/schema、已知参数类型和范围，文件限 256 KB，未知键忽略，缺失键保留当前值。导入确认之后才保存回退快照并应用。范围仅为本插件视觉设置，不包含总开关、兼容模式、严格层级、已保存方案库及原 Liquidify 设置。取消/校验失败不更改设置；导入后可用恢复上一次设置撤销。
+
+重绘修复：不再把内部 cc_maskAttributedString 画布属性用于普通标签；复制显示标签的富文本，渲染完整 UILabel，避免 textRect + drawTextInRect 的二次定位。渐变和彩边内部统一零原点，原遮罩位置转换到 host 的局部坐标；补充源遮罩 bounds/transform/owner 等几何缓存条件。此为针对截图水平截断的修复尝试，无法凭截图确认唯一根因，仍需两种模式真机对照。
+
+从 1.4.1 替换六文件：Tweak.xm、control、Preferences/Makefile、Preferences/LSGCRootListController.m、Preferences/Resources/Root.plist、Preferences/Resources/Info.plist。原有两个 Math 头文件保留。主 Makefile / 工作流不变；设置 Makefile 新增 UniformTypeIdentifiers 框架，不能漏换。
+
+验证：真实 iPhoneOS16.5 SDK 下核心和设置控制器 arm64/arm64e 对象编译，-Wall -Wextra -Werror。尚未完整链接打包、文件选择器/分享/导入端到端或真机视觉验收。以下为历史记录。
+
+## 1.4.1 历史更新
 
 仅将五色渐变的五行文字按钮折叠为一排五个颜色圆点。圆点显示已保存颜色，点击仍调用系统选色器；改色时发送本进程刷新通知。方案切换、恢复及面板重载时重新读取实际颜色。原 color1～color5 键和 Root.plist 配置保留用于方案保存，不迁移或重置设置。彩边选色等其他界面不变。
 

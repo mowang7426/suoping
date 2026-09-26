@@ -156,8 +156,9 @@ static UIImage *SnapshotText(UILabel *label) {
     mirror.textAlignment=label.textAlignment; mirror.numberOfLines=label.numberOfLines;
     mirror.lineBreakMode=label.lineBreakMode; mirror.adjustsFontSizeToFitWidth=label.adjustsFontSizeToFitWidth;
     mirror.minimumScaleFactor=label.minimumScaleFactor; mirror.baselineAdjustment=label.baselineAdjustment;
-    NSAttributedString *source=ReadObject(label,@"cc_maskAttributedString");
-    if (![source isKindOfClass:NSAttributedString.class]) source=label.attributedText;
+    // Use the displayed label's attributes, not Liquidify's private mask-canvas offsets.
+    NSAttributedString *source=label.attributedText;
+    if (![source isKindOfClass:NSAttributedString.class]) source=nil;
     if (source.length) {
         NSMutableAttributedString *text=[source mutableCopy]; NSRange all=NSMakeRange(0,text.length);
         [text addAttribute:NSForegroundColorAttributeName value:UIColor.whiteColor range:all];
@@ -168,10 +169,12 @@ static UIImage *SnapshotText(UILabel *label) {
     UIGraphicsImageRendererFormat *format=[UIGraphicsImageRendererFormat preferredFormat];
     format.opaque=NO; format.scale=MIN(UIScreen.mainScreen.scale,2.0);
     UIGraphicsImageRenderer *renderer=[[UIGraphicsImageRenderer alloc] initWithSize:mirror.bounds.size format:format];
+    [mirror setNeedsLayout]; [mirror layoutIfNeeded];
+    [mirror.layer setNeedsDisplay]; [mirror.layer displayIfNeeded];
     UIImage *image=[renderer imageWithActions:^(UIGraphicsImageRendererContext *context) {
-        (void)context;
-        CGRect rect=[mirror textRectForBounds:mirror.bounds limitedToNumberOfLines:mirror.numberOfLines];
-        [mirror drawTextInRect:rect];
+        // Render the complete UILabel once. Passing textRect to drawTextInRect:
+        // can apply vertical alignment twice and clip oversized clock fonts.
+        [mirror.layer renderInContext:context.CGContext];
     }];
     return HasAlpha(image) ? image : nil;
 }
@@ -289,11 +292,11 @@ static void ApplyEdges(LSGCState *s,CALayer *host) {
     if (![Config[@"edgeEnabled"] boolValue]) { ClearEdges(s); return; }
     if (!s.edgeHost) return;
     BOOL appearing=s.edgeHost.superlayer==nil;
-    s.edgeHost.bounds=host.bounds;
+    s.edgeHost.bounds=(CGRect){CGPointZero,host.bounds.size};
     s.edgeHost.position=CGPointMake(CGRectGetMidX(host.bounds),CGRectGetMidY(host.bounds));
     s.edgeHost.zPosition=s.gradient.zPosition+0.01;
-    s.edgeTint.bounds=host.bounds;
-    s.edgeTint.position=CGPointMake(CGRectGetMidX(host.bounds),CGRectGetMidY(host.bounds));
+    s.edgeTint.bounds=(CGRect){CGPointZero,host.bounds.size};
+    s.edgeTint.position=CGPointMake(host.bounds.size.width*.5,host.bounds.size.height*.5);
     MatchGeometry(s.edgeMask,s.mask); MatchGeometry(s.edgeBevel,s.mask);
     NSInteger preset=[Config[@"edgePalette"] integerValue];
     NSArray *colors;
@@ -360,7 +363,7 @@ static void Apply(UILabel *label) {
         BOOL native=owner && [Config[@"maskMode"] integerValue]!=1;
         NSString *signature=[NSString stringWithFormat:@"%@|%@|%@|%p|%p|%@|%d|%d|%lu",
             label.attributedText ?: (id)label.text,NSStringFromCGRect(label.bounds),label.font,
-            source,(__bridge void *)source.contents,NSStringFromCGRect(source ? source.frame : CGRectZero),
+            source,(__bridge void *)source.contents,[NSString stringWithFormat:@"%@|%@|%@|%p|%@",NSStringFromCGRect(source ? source.frame : CGRectZero),NSStringFromCGRect(source ? source.bounds : CGRectZero),source ? [NSValue valueWithCATransform3D:source.transform] : @"none",owner,NSStringFromCGRect(owner ? owner.bounds : label.bounds)],
             ReadFlag(label,@"cachedBuildFinished"),native,(unsigned long)Revision];
         CALayer *host=native ? owner : label.layer;
         if (![s.signature isEqualToString:signature]) {
@@ -376,17 +379,17 @@ static void Apply(UILabel *label) {
             s.mask.transform=CATransform3DIdentity;
             if (native) {
                 s.mask.bounds=source.bounds; s.mask.anchorPoint=source.anchorPoint;
-                s.mask.position=source.position; s.mask.transform=source.transform;
+                s.mask.position=CGPointMake(source.position.x-host.bounds.origin.x,source.position.y-host.bounds.origin.y); s.mask.transform=source.transform;
             } else {
                 s.mask.anchorPoint=CGPointMake(.5,.5);
                 s.mask.bounds=(CGRect){CGPointZero,label.bounds.size};
-                s.mask.position=CGPointMake(CGRectGetMidX(label.bounds),CGRectGetMidY(label.bounds));
+                s.mask.position=CGPointMake(label.bounds.size.width*.5,label.bounds.size.height*.5);
             }
             s.maskMode=native ? @"原插件文字遮罩" : @"同字体文字重绘";
             [CATransaction commit]; s.signature=signature;
         } else if ([s.maskMode isEqualToString:@"同字体文字重绘"]) host=label.layer;
         [CATransaction begin]; [CATransaction setDisableActions:YES];
-        s.gradient.bounds=host.bounds;
+        s.gradient.bounds=(CGRect){CGPointZero,host.bounds.size};
         s.gradient.position=CGPointMake(CGRectGetMidX(host.bounds),CGRectGetMidY(host.bounds));
         BOOL glass=[Config[@"glassBlend"] boolValue];
         s.gradient.opacity=glass ? Clamp([Config[@"glassTint"] doubleValue],0,0.65) : Clamp([Config[@"opacity"] doubleValue],0,1);
@@ -504,7 +507,7 @@ static void WriteDiagnostics(void) {
             [details addObject:[NSString stringWithFormat:@"时间形态=%@ 锁屏范围=%@ 可见=%@\n模式=%@\n%@",time?@"是":@"否",lock?@"是":@"否",Visible(label)?@"是":@"否",s.maskMode?:@"尚未渲染",[chain componentsJoinedByString:@" > "]]];
         }
     }
-    NSString *report=[NSString stringWithFormat:@"兼容层 1.4.0\n类已加载：%@\nHook 已安装：%@\n玻璃标签：%lu\n时间标签：%lu\n锁屏范围命中：%lu\n已附加渐变：%lu\n开关：%@\n\n%@",
+    NSString *report=[NSString stringWithFormat:@"兼容层 1.5.0\n类已加载：%@\nHook 已安装：%@\n玻璃标签：%lu\n时间标签：%lu\n锁屏范围命中：%lu\n已附加渐变：%lu\n开关：%@\n\n%@",
         GlassClass?@"是":@"否",Hooked?@"是":@"否",(unsigned long)Labels.allObjects.count,(unsigned long)clocks,(unsigned long)scoped,(unsigned long)active,[Config[@"enabled"] boolValue]?@"开":@"关",[details componentsJoinedByString:@"\n\n"]];
     CFPreferencesSetAppValue(CFSTR("diagnosticReport"),(__bridge CFStringRef)report,(__bridge CFStringRef)Domain);
     CFPreferencesAppSynchronize((__bridge CFStringRef)Domain);
