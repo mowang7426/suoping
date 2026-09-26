@@ -3,7 +3,7 @@ Name: LockScreen Gradient Clock
 Version: 1.5.0
 Architecture: iphoneos-arm64
 Description: Configurable Lock Screen clock gradient.
-Maintainer: Minis
-Author: Minis
+Maintainer: MoWang
+Author: MoWang
 Section: Tweaks
 Depends: mobilesubstrate, preferenceloader
