@@ -242,6 +242,30 @@
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>label</key>
+			<string>配置文件</string>
+			<key>footerText</key>
+			<string>导出为 JSON 文件，可在同一插件的其他设备或重装后导入。导入前会校验格式并保存当前视觉设置；不会导入原液态玻璃插件设置。</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSButtonCell</string>
+			<key>label</key>
+			<string>导出当前配置</string>
+			<key>action</key>
+			<string>exportConfig</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSButtonCell</string>
+			<key>label</key>
+			<string>导入配置文件</string>
+			<key>action</key>
+			<string>importConfig</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>label</key>
 			<string>诊断</string>
 			<key>footerText</key>
 			<string>先亮屏查看一次锁屏时钟，再回到此处诊断。若有时间标签但锁屏范围为 0，可临时关闭严格限定后测试；关闭后可能影响其他时间形态的 Liquidify 标签。</string>
