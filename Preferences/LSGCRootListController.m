@@ -20,6 +20,8 @@ static NSString *const LSGCSwatchesChanged=@"LSGC.SwatchesChanged";
 @property(nonatomic,strong) NSMutableArray<UIButton *> *buttons;
 @property(nonatomic,strong) NSMutableArray<UIView *> *dots;
 - (void)refreshColors;
+- (void)enableColorInteraction;
+- (id<LSGCSwatchOwner>)resolvedOwner;
 @end
 @implementation LSGCColorStripCell
 - (instancetype)initWithStyle:(UITableViewCellStyle)style reuseIdentifier:(NSString *)identifier specifier:(PSSpecifier *)specifier {
@@ -61,6 +63,7 @@ static NSString *const LSGCSwatchesChanged=@"LSGC.SwatchesChanged";
             [self.strip addArrangedSubview:button]; [self.buttons addObject:button]; [self.dots addObject:dot];
         }
         [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(colorsChanged:) name:LSGCSwatchesChanged object:nil];
+        [self enableColorInteraction];
         [self refreshColors];
     }
     return self;
@@ -74,14 +77,33 @@ static NSString *const LSGCSwatchesChanged=@"LSGC.SwatchesChanged";
     self.colorSpecs=[specifier propertyForKey:@"lsgcColorSpecifiers"];
     [self refreshColors];
 }
-- (void)didMoveToWindow { [super didMoveToWindow]; if (self.window) [self refreshColors]; }
+- (void)enableColorInteraction {
+    self.cellEnabled=YES;
+    self.userInteractionEnabled=YES;
+    self.contentView.userInteractionEnabled=YES;
+    self.strip.userInteractionEnabled=YES;
+    for (UIButton *button in self.buttons) { button.enabled=YES; button.userInteractionEnabled=YES; }
+}
+- (id<LSGCSwatchOwner>)resolvedOwner {
+    // Prefer the actual displayed controller, not a stale Preferences target proxy.
+    for (UIResponder *r=self.nextResponder;r;r=r.nextResponder) {
+        if ([r respondsToSelector:@selector(chooseColor:)] && [r respondsToSelector:@selector(readPreferenceValue:)]) {
+            self.pickerOwner=(id<LSGCSwatchOwner>)r; return self.pickerOwner;
+        }
+    }
+    if ([(id)self.pickerOwner respondsToSelector:@selector(chooseColor:)]) return self.pickerOwner;
+    id candidate=self.specifier.target;
+    return [candidate respondsToSelector:@selector(chooseColor:)] ? candidate : nil;
+}
+- (void)layoutSubviews { [super layoutSubviews]; [self enableColorInteraction]; }
+- (void)didMoveToWindow { [super didMoveToWindow]; [self enableColorInteraction]; if (self.window) [self refreshColors]; }
 - (void)traitCollectionDidChange:(UITraitCollection *)previous {
     [super traitCollectionDidChange:previous]; [self refreshColors];
 }
 - (void)refreshColors {
     for (NSUInteger i=0;i<self.dots.count && i<self.colorSpecs.count;i++) {
         PSSpecifier *spec=self.colorSpecs[i];
-        id stored=[self.pickerOwner readPreferenceValue:spec];
+        id stored=[[self resolvedOwner] readPreferenceValue:spec];
         NSString *hex=[stored isKindOfClass:NSString.class] ? stored : [spec propertyForKey:@"default"];
         NSPredicate *valid=[NSPredicate predicateWithFormat:@"SELF MATCHES %@",@"#[0-9A-Fa-f]{6}"];
         if (![valid evaluateWithObject:hex]) hex=[spec propertyForKey:@"default"];
@@ -93,7 +115,7 @@ static NSString *const LSGCSwatchesChanged=@"LSGC.SwatchesChanged";
 }
 - (void)tapped:(UIButton *)sender {
     NSUInteger index=(NSUInteger)sender.tag;
-    if (index<self.colorSpecs.count) [self.pickerOwner chooseColor:self.colorSpecs[index]];
+    if (index<self.colorSpecs.count) [[self resolvedOwner] chooseColor:self.colorSpecs[index]];
 }
 @end
 
@@ -123,9 +145,10 @@ static void Reply(CFNotificationCenterRef center, void *observer, CFStringRef na
             if ([[spec propertyForKey:@"key"] isEqual:key]) { [colors addObject:spec]; break; }
         }
         if (colors.count==5) {
-            PSSpecifier *strip=[PSSpecifier preferenceSpecifierNamed:@"" target:self set:NULL get:NULL detail:nil cell:PSStaticTextCell edit:nil];
+            PSSpecifier *strip=[PSSpecifier preferenceSpecifierNamed:@"" target:self set:NULL get:NULL detail:nil cell:PSLinkCell edit:nil];
             [strip setProperty:LSGCColorStripCell.class forKey:@"cellClass"];
             [strip setProperty:@76 forKey:@"height"];
+            [strip setProperty:@YES forKey:@"enabled"];
             [strip setProperty:colors forKey:@"lsgcColorSpecifiers"];
             NSMutableArray *display=[NSMutableArray array];
             BOOL inserted=NO;
@@ -138,6 +161,15 @@ static void Reply(CFNotificationCenterRef center, void *observer, CFStringRef na
         } else _specifiers=loaded;
     }
     return _specifiers;
+}
+- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    UITableViewCell *cell=[super tableView:tableView cellForRowAtIndexPath:indexPath];
+    if ([cell isKindOfClass:LSGCColorStripCell.class]) {
+        LSGCColorStripCell *strip=(LSGCColorStripCell *)cell;
+        strip.pickerOwner=(id<LSGCSwatchOwner>)self;
+        [strip enableColorInteraction]; [strip refreshColors];
+    }
+    return cell;
 }
 - (void)viewDidLoad {
     [super viewDidLoad]; self.title=@"锁屏时间渐变";
@@ -168,6 +200,7 @@ static void Reply(CFNotificationCenterRef center, void *observer, CFStringRef na
     return value ?: [specifier propertyForKey:@"default"];
 }
 - (void)chooseColor:(PSSpecifier *)specifier {
+    if (self.presentedViewController || !self.view.window) return;
     self.colorKey=[specifier propertyForKey:@"key"];
     NSString *hex=[self readPreferenceValue:specifier];
     unsigned value=0;
@@ -424,7 +457,7 @@ static void Reply(CFNotificationCenterRef center, void *observer, CFStringRef na
         LSGCRootListController *strong=weak;
         if (strong.waiting) {
             strong.waiting=NO;
-            [strong showMessage:@"SpringBoard 未响应。请确认安装的是 1.5.0，已注销，且允许本插件注入 SpringBoard。此提示不是已成功适配的证明。"];
+            [strong showMessage:@"SpringBoard 未响应。请确认安装的是 1.5.1，已注销，且允许本插件注入 SpringBoard。此提示不是已成功适配的证明。"];
         }
     });
 }
