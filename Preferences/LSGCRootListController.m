@@ -3,6 +3,7 @@
 #import <UIKit/UIKit.h>
 #import <CoreFoundation/CoreFoundation.h>
 #import <math.h>
+#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 
 #import <Preferences/PSTableCell.h>
 
@@ -99,7 +100,7 @@ static NSString *const LSGCSwatchesChanged=@"LSGC.SwatchesChanged";
 static CFStringRef const Domain=CFSTR("com.minis.lockscreengradientclock");
 static CFStringRef const Changed=CFSTR("com.minis.lockscreengradientclock/changed");
 static CFStringRef const Replied=CFSTR("com.minis.lockscreengradientclock/diagnosed");
-@interface LSGCRootListController : PSListController <UIColorPickerViewControllerDelegate>
+@interface LSGCRootListController : PSListController <UIColorPickerViewControllerDelegate, UIDocumentPickerDelegate>
 @property(nonatomic,copy) NSString *colorKey;
 @property(nonatomic) BOOL waiting;
 @property(nonatomic) BOOL editCheckpointMade;
@@ -355,6 +356,65 @@ static void Reply(CFNotificationCenterRef center, void *observer, CFStringRef na
     [self reloadSpecifiers];
 }
 
+- (void)exportConfig {
+    NSDictionary *values=[self currentVisuals];
+    NSDictionary *document=@{@"format":@"LockScreenGradientClock",@"schema":@1,@"exportedAt":@([[NSDate date] timeIntervalSince1970]),@"values":values};
+    NSError *error=nil; NSData *data=[NSJSONSerialization dataWithJSONObject:document options:NSJSONWritingPrettyPrinted error:&error];
+    if (!data || error) { [self paletteMessage:@"导出失败：无法生成有效 JSON。"] ; return; }
+    NSString *name=[NSString stringWithFormat:@"LockScreenGradientClock-%@.json",[NSDateFormatter localizedStringFromDate:[NSDate date] dateStyle:NSDateFormatterShortStyle timeStyle:NSDateFormatterNoStyle]];
+    name=[name stringByReplacingOccurrencesOfString:@"/" withString:@"-"];
+    NSURL *url=[NSURL fileURLWithPath:[NSTemporaryDirectory() stringByAppendingPathComponent:name]];
+    if (![data writeToURL:url options:NSDataWritingAtomic error:&error]) { [self paletteMessage:@"导出失败：无法写入临时文件。"] ; return; }
+    UIActivityViewController *share=[[UIActivityViewController alloc] initWithActivityItems:@[url] applicationActivities:nil];
+    share.popoverPresentationController.sourceView=self.view; share.popoverPresentationController.sourceRect=CGRectMake(CGRectGetMidX(self.view.bounds),CGRectGetMidY(self.view.bounds),1,1);
+    [self presentViewController:share animated:YES completion:nil];
+}
+- (void)importConfig {
+    UIDocumentPickerViewController *picker=[[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[[UTType typeWithIdentifier:@"public.json"]] asCopy:YES];
+    picker.delegate=(id<UIDocumentPickerDelegate>)self; picker.allowsMultipleSelection=NO;
+    [self presentViewController:picker animated:YES completion:nil];
+}
+- (void)documentPicker:(UIDocumentPickerViewController *)controller didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
+    (void)controller; NSURL *url=urls.firstObject; if (!url) return;
+    BOOL access=[url startAccessingSecurityScopedResource]; NSError *error=nil;
+    NSFileHandle *handle=[NSFileHandle fileHandleForReadingFromURL:url error:&error];
+    NSData *data=[handle readDataUpToLength:262145 error:&error]; [handle closeFile];
+    if (access) [url stopAccessingSecurityScopedResource];
+    if (data.length>262144) { [self paletteMessage:@"导入失败：文件超过 256 KB。"] ; return; }
+    if (!data || error) { [self paletteMessage:@"导入失败：无法读取文件。"] ; return; }
+    id object=[NSJSONSerialization JSONObjectWithData:data options:0 error:&error];
+    if (error || ![object isKindOfClass:NSDictionary.class] || ![object[@"values"] isKindOfClass:NSDictionary.class] ||
+        ![object[@"format"] isEqual:@"LockScreenGradientClock"] || ![object[@"schema"] isEqual:@1]) {
+        [self paletteMessage:@"导入失败：文件格式、版本或内容无效；当前设置没有改变。"] ; return;
+    }
+    NSDictionary *input=object[@"values"], *schema=[self visualSchema];
+    NSMutableDictionary *merged=[[self currentVisuals] mutableCopy];
+    NSUInteger count=0;
+    for (NSString *key in schema) {
+        id value=input[key]; if (!value) continue;
+        NSDictionary *item=schema[key]; id fallback=item[@"default"];
+        BOOL valid=YES;
+        if ([fallback isKindOfClass:NSNumber.class]) {
+            valid=[value isKindOfClass:NSNumber.class] && isfinite([value doubleValue]);
+            if (valid && item[@"min"]) valid=[value doubleValue]>=[item[@"min"] doubleValue];
+            if (valid && item[@"max"]) valid=[value doubleValue]<=[item[@"max"] doubleValue];
+            if (valid && item[@"validValues"]) valid=[item[@"validValues"] containsObject:value];
+            if (valid && [item[@"cell"] isEqual:@"PSSwitchCell"]) valid=[value isEqual:@0] || [value isEqual:@1];
+        } else {
+            valid=[value isKindOfClass:NSString.class] && [[NSPredicate predicateWithFormat:@"SELF MATCHES %@",@"#[0-9A-Fa-f]{6}"] evaluateWithObject:value];
+        }
+        if (!valid) { [self paletteMessage:[NSString stringWithFormat:@"导入失败：参数 %@ 的类型或范围不正确。当前设置未改变。",key]]; return; }
+        merged[key]=value; count++;
+    }
+    if (!count) { [self paletteMessage:@"没有可导入的视觉参数，当前设置未改变。"] ; return; }
+    NSDictionary *accepted=merged;
+    NSMutableDictionary *confirmValues=[accepted mutableCopy];
+    UIAlertController *confirm=[UIAlertController alertControllerWithTitle:@"导入配置" message:[NSString stringWithFormat:@"将应用 %lu 项视觉参数（包含保留的现有参数）。不修改总开关、兼容设置或已保存方案。确认后保存回退快照。",(unsigned long)confirmValues.count] preferredStyle:UIAlertControllerStyleAlert];
+    [confirm addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    [confirm addAction:[UIAlertAction actionWithTitle:@"导入" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) { (void)action; self.editCheckpointMade=NO; [self checkpoint]; [self writeVisuals:confirmValues]; self.editCheckpointMade=NO; }]];
+    [self presentViewController:confirm animated:YES completion:nil];
+}
+
 - (void)diagnose {
     if (self.waiting) return;
     self.waiting=YES;
@@ -364,7 +424,7 @@ static void Reply(CFNotificationCenterRef center, void *observer, CFStringRef na
         LSGCRootListController *strong=weak;
         if (strong.waiting) {
             strong.waiting=NO;
-            [strong showMessage:@"SpringBoard 未响应。请确认安装的是 1.4.1，已注销，且允许本插件注入 SpringBoard。此提示不是已成功适配的证明。"];
+            [strong showMessage:@"SpringBoard 未响应。请确认安装的是 1.5.0，已注销，且允许本插件注入 SpringBoard。此提示不是已成功适配的证明。"];
         }
     });
 }
