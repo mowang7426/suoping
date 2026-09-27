@@ -1,2 +1,2 @@
 #pragma once
-#define LSGCVersionString @"1.7.1"
+#define LSGCVersionString @"1.7.2"

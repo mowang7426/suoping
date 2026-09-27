@@ -1,6 +1,12 @@
-# LockScreenGradientClock 1.7.1 — 字形预览对齐
+# LockScreenGradientClock 1.7.2 — 字形预览重新裁字
 
-## 1.7.1 当前版本
+## 1.7.2 当前版本
+
+设置页「9:41」先画成字形图，再用这张图裁渐变。1.7.1 直接对文字设置混合模式，裁切没有生效，预览变成一整条渐变。
+
+从 1.7.1 替换：Preferences/LSGCRootListController.m、control、Preferences/Resources/Info.plist、LSGCVersion.h。
+
+## 1.7.1 历史更新
 
 设置页「9:41」预览改为在同一套坐标里先画渐变字、再叠细彩边。上一版蒙版和描边各画一次，字形会错开叠成双层。
 

@@ -167,6 +167,7 @@ static UIColor *LSGCHexColor(NSString *hex) {
     self=[super initWithStyle:style reuseIdentifier:identifier specifier:specifier];
     if (!self) return nil;
     self.selectionStyle=UITableViewCellSelectionStyleNone;
+    self.accessoryType=UITableViewCellAccessoryNone;
     self.textLabel.text=nil; self.detailTextLabel.text=nil;
     self.swatch=[[UIView alloc] init];
     self.swatch.layer.cornerRadius=12; self.swatch.clipsToBounds=YES;
@@ -184,6 +185,7 @@ static UIColor *LSGCHexColor(NSString *hex) {
 - (void)dealloc { [[NSNotificationCenter defaultCenter] removeObserver:self]; }
 - (void)layoutSubviews {
     [super layoutSubviews];
+    self.accessoryType=UITableViewCellAccessoryNone;
     if (!CGSizeEqualToSize(self.drawnSize,self.swatch.bounds.size)) [self refreshBar];
 }
 - (void)refreshBar {
@@ -225,6 +227,7 @@ static UIColor *LSGCHexColor(NSString *hex) {
     self=[super initWithStyle:style reuseIdentifier:identifier specifier:specifier];
     if (!self) return nil;
     self.selectionStyle=UITableViewCellSelectionStyleNone;
+    self.accessoryType=UITableViewCellAccessoryNone;
     self.textLabel.text=nil; self.detailTextLabel.text=nil;
     self.preview=[[UIImageView alloc] init];
     self.preview.contentMode=UIViewContentModeScaleAspectFit;
@@ -242,6 +245,7 @@ static UIColor *LSGCHexColor(NSString *hex) {
 - (void)dealloc { [[NSNotificationCenter defaultCenter] removeObserver:self]; }
 - (void)layoutSubviews {
     [super layoutSubviews];
+    self.accessoryType=UITableViewCellAccessoryNone;
     if (!CGSizeEqualToSize(self.drawnSize,self.preview.bounds.size)) [self refreshClock];
 }
 - (NSString *)prefString:(NSString *)key fallback:(NSString *)fallback {
@@ -268,10 +272,14 @@ static UIColor *LSGCHexColor(NSString *hex) {
     BOOL edges=[self prefNumber:@"edgeEnabled" fallback:0]>=0.5;
     UIColor *edgeColor=LSGCHexColor([self prefString:@"edgeColor1" fallback:@"#D0FAFF"]);
     NSString *text=@"9:41";
-    UIFont *font=[UIFont monospacedDigitSystemFontOfSize:MIN(52,size.height*0.62) weight:UIFontWeightBold];
+    UIFont *font=[UIFont monospacedDigitSystemFontOfSize:MIN(56,size.height*0.7) weight:UIFontWeightBold];
     NSDictionary *fillAttrs=@{NSFontAttributeName:font,NSForegroundColorAttributeName:UIColor.whiteColor};
     CGSize textSize=[text sizeWithAttributes:fillAttrs];
     CGPoint origin=CGPointMake((size.width-textSize.width)/2.0,(size.height-textSize.height)/2.0);
+    UIGraphicsBeginImageContextWithOptions(size,NO,0);
+    [text drawAtPoint:origin withAttributes:fillAttrs];
+    UIImage *glyph=UIGraphicsGetImageFromCurrentImageContext();
+    UIGraphicsEndImageContext();
     double direction=[self prefNumber:@"direction" fallback:0];
     double angle=[self prefNumber:@"customAngleEnabled" fallback:0]>=0.5 ? [self prefNumber:@"gradientAngle" fallback:0] : (direction==1 ? 90 : (direction==2 ? 45 : 0));
     double endpoints[4];
@@ -281,11 +289,9 @@ static UIColor *LSGCHexColor(NSString *hex) {
     CGGradientRef gradient=CGGradientCreateWithColorComponents(space,comps,locs,5);
     UIGraphicsBeginImageContextWithOptions(size,NO,0);
     CGContextRef fillCtx=UIGraphicsGetCurrentContext();
-    if (fillCtx && gradient) {
-        CGContextDrawLinearGradient(fillCtx,gradient,CGPointMake(endpoints[0]*size.width,endpoints[1]*size.height),CGPointMake(endpoints[2]*size.width,endpoints[3]*size.height),0);
-        CGContextSetBlendMode(fillCtx,kCGBlendModeDestinationIn);
-        [text drawAtPoint:origin withAttributes:fillAttrs];
-    }
+    if (fillCtx && gradient) CGContextDrawLinearGradient(fillCtx,gradient,CGPointMake(endpoints[0]*size.width,endpoints[1]*size.height),CGPointMake(endpoints[2]*size.width,endpoints[3]*size.height),0);
+    CGContextSetBlendMode(fillCtx,kCGBlendModeDestinationIn);
+    [glyph drawInRect:CGRectMake(0,0,size.width,size.height)];
     UIImage *filled=UIGraphicsGetImageFromCurrentImageContext();
     UIGraphicsEndImageContext();
     UIGraphicsBeginImageContextWithOptions(size,NO,0);
@@ -294,7 +300,7 @@ static UIColor *LSGCHexColor(NSString *hex) {
         NSDictionary *strokeAttrs=@{NSFontAttributeName:font,NSForegroundColorAttributeName:UIColor.clearColor,NSStrokeColorAttributeName:edgeColor,NSStrokeWidthAttributeName:@(stroke/font.pointSize*100.0)};
         [text drawAtPoint:origin withAttributes:strokeAttrs];
     }
-    [filled drawAtPoint:CGPointZero];
+    [filled drawInRect:CGRectMake(0,0,size.width,size.height)];
     UIImage *image=UIGraphicsGetImageFromCurrentImageContext();
     UIGraphicsEndImageContext();
     if (gradient) CGGradientRelease(gradient);
