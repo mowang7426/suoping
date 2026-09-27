@@ -456,7 +456,7 @@ static UIColor *LSGCHexColor(NSString *hex) {
     NSString *path=[[NSBundle bundleForClass:self.class] pathForResource:@"Root" ofType:@"plist"];
     NSDictionary *root=[NSDictionary dictionaryWithContentsOfFile:path];
     NSMutableDictionary *schema=[NSMutableDictionary dictionary];
-    NSSet *excluded=[NSSet setWithArray:@[@"enabled",@"strictScope",@"maskMode"]];
+    NSSet *excluded=[NSSet setWithArray:@[@"enabled",@"dateGradient",@"strictScope",@"maskMode"]];
     for (NSDictionary *item in root[@"items"]) {
         NSString *key=item[@"key"];
         if (key && item[@"default"] && ![excluded containsObject:key]) schema[key]=item;

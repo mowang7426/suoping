@@ -28,6 +28,18 @@
 		</dict>
 		<dict>
 			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>label</key>
+			<string>日期与农历渐变</string>
+			<key>key</key>
+			<string>dateGradient</string>
+			<key>default</key>
+			<false/>
+			<key>defaults</key>
+			<string>com.minis.lockscreengradientclock</string>
+		</dict>
+		<dict>
+			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>label</key>
 			<string>液态玻璃染色</string>

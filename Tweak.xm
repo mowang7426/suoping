@@ -70,6 +70,7 @@ static CGFloat Clamp(CGFloat x, CGFloat lo, CGFloat hi) {
 static void LoadConfig(void) {
     CFPreferencesAppSynchronize((__bridge CFStringRef)Domain);
     NSMutableDictionary *values=[@{@"enabled":@YES,@"color1":@"#39D6ED",@"color2":@"#4D7CFF",@"color3":@"#AD4DF5",@"color4":@"#F950B0",@"color5":@"#FFBD61",@"direction":@0,@"opacity":@0.65,@"animate":@NO,@"strictScope":@YES,@"maskMode":@0,@"glassBlend":@YES,@"glassTint":@0.32,@"edgeEnabled":@NO,@"edgePalette":@0,@"edgeCore":@0.22,@"edgeStrength":@0.65,@"edgeWidth":@1.5,@"edgeHighlight":@0.35,@"edgeReveal":@NO,@"customAngleEnabled":@NO,@"gradientAngle":@0,@"customStopsEnabled":@NO,@"stop1":@0,@"stop2":@0.25,@"stop3":@0.5,@"stop4":@0.75,@"stop5":@1,@"reverseColors":@NO,@"independentEdges":@NO,@"edgeColor1":@"#D0FAFF",@"edgeColor2":@"#B39CFF",@"edgeColor3":@"#F7A9DD",@"timeShift":@NO,@"parallaxAngle":@NO,@"scheduleEnabled":@NO} mutableCopy];
+    values[@"dateGradient"]=@NO;
     for (NSString *key in values.allKeys) {
         id value=CFBridgingRelease(CFPreferencesCopyAppValue((__bridge CFStringRef)key,(__bridge CFStringRef)Domain));
         if (value) values[key]=value;
@@ -94,6 +95,21 @@ static BOOL TimeText(NSString *s) {
     NSUInteger count=0;
     for (NSUInteger i=0;i<s.length;i++) if ([digits characterIsMember:[s characterAtIndex:i]]) count++;
     return count>=3 && count<=6 && ([s containsString:@":"] || [s containsString:@"："] || [s containsString:@"∶"]);
+}
+static BOOL ClockDateText(NSString *s) {
+    if (TimeText(s)) return YES;
+    if (!s.length || s.length>64) return NO;
+    BOOL hasDateMarker=[s containsString:@"年"] || [s containsString:@"月"] ||
+        [s containsString:@"日"] || [s containsString:@"星期"] ||
+        [s containsString:@"周"] || [s containsString:@"农历"] ||
+        [s containsString:@"閏"] || [s containsString:@"闰"];
+    if (!hasDateMarker) return NO;
+    NSUInteger digits=0;
+    for (NSUInteger i=0;i<s.length;i++) if ([NSCharacterSet.decimalDigitCharacterSet characterIsMember:[s characterAtIndex:i]]) digits++;
+    return digits>0 || [s containsString:@"星期"] || [s containsString:@"周"] || [s containsString:@"农历"];
+}
+static BOOL GradientText(NSString *s) {
+    return TimeText(s) || ([Config[@"dateGradient"] boolValue] && ClockDateText(s));
 }
 static BOOL InLockScreen(UIView *view) {
     for (UIView *v=view; v; v=v.superview) {
@@ -569,7 +585,7 @@ static void Apply(UILabel *label) {
     if (!NSThread.isMainThread || !GlassClass || ![label isKindOfClass:GlassClass]) return;
     [Labels addObject:label];
     BOOL scoped=![Config[@"strictScope"] boolValue] || InLockScreen(label);
-    if (![Config[@"enabled"] boolValue] || !Visible(label) || !TimeText(label.text ?: label.attributedText.string) ||
+    if (![Config[@"enabled"] boolValue] || !Visible(label) || !GradientText(label.text ?: label.attributedText.string) ||
         !scoped || label.bounds.size.width<1 || label.bounds.size.height<1 ||
         label.bounds.size.width>2048 || label.bounds.size.height>2048) { RemoveOverlay(label); return; }
     LSGCState *s=objc_getAssociatedObject(label,&StateKey);
@@ -620,8 +636,8 @@ static void Apply(UILabel *label) {
             @try {
                 CALayer *nowSource=nil,*nowOwner=nil; NSUInteger nowMotion=0;
                 NSString *now=DescribeMask(strong,&nowSource,&nowOwner,NULL,NULL,&nowMotion,NULL,NULL,NULL);
-                if (![now isEqualToString:signature] || ![Config[@"enabled"] boolValue] || !Visible(strong) || !TimeText(strong.text ?: strong.attributedText.string)) {
-                    if ([Config[@"enabled"] boolValue] && Visible(strong) && TimeText(strong.text ?: strong.attributedText.string)) Schedule(strong);
+                if (![now isEqualToString:signature] || ![Config[@"enabled"] boolValue] || !Visible(strong) || !GradientText(strong.text ?: strong.attributedText.string)) {
+                    if ([Config[@"enabled"] boolValue] && Visible(strong) && GradientText(strong.text ?: strong.attributedText.string)) Schedule(strong);
                     else RemoveOverlay(strong);
                 } else {
                     CALayer *installHost=(usedNative && nowOwner) ? nowOwner : strong.layer;
@@ -705,7 +721,7 @@ static void WriteDiagnostics(void) {
     Discover();
     NSUInteger clocks=0,scoped=0,active=0; NSMutableArray *details=[NSMutableArray array];
     for (UILabel *label in Labels.allObjects) {
-        BOOL time=TimeText(label.text ?: label.attributedText.string); clocks+=time;
+        BOOL time=GradientText(label.text ?: label.attributedText.string); clocks+=time;
         BOOL lock=InLockScreen(label); scoped+=(time && lock);
         LSGCState *s=objc_getAssociatedObject(label,&StateKey);
         active+=(s.gradient.superlayer!=nil);
