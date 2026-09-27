@@ -1,6 +1,14 @@
-# LockScreenGradientClock 1.6.0 — 配色工坊、壁纸取色、会变的钟
+# LockScreenGradientClock 1.7.0 — 字形预览、分段取色、早晚方案
 
-## 1.6.0 当前版本
+## 1.7.0 当前版本
+
+设置页色条下有一行「9:41」，按当前五种颜色、角度和彩边绘制，只在设置里显示。壁纸取色改为上、中、下三段铺成五色；分段失败时退回平均色，再失败则保持当前配色。
+
+早晚方案从已保存的方案里选。7:00 套用白天方案，19:00 套用夜晚方案，只在时段变化时切换一次。默认关闭。不包含常亮专用配色，也不扩展到日期行。
+
+从 1.6.0 替换：Tweak.xm、control、Preferences/LSGCRootListController.m、Preferences/Resources/Root.plist、Preferences/Resources/Info.plist、LSGCVersion.h、LSGCPalette.h、tests/palette_test.cpp。
+
+## 1.6.0 历史更新
 
 设置页五种颜色上方有实时色条。内置八套风格写入颜色和彩边颜色，不改总开关。贴近壁纸 / 比壁纸更亮向 SpringBoard 取锁屏壁纸主色，失败则保持当前配色，可用恢复上一次设置撤销。
 

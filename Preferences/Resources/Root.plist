@@ -70,7 +70,7 @@
 			<key>label</key>
 			<string>五色渐变</string>
 			<key>footerText</key>
-			<string>顶部色条跟随五种颜色。内置风格和壁纸取色只改颜色与彩边颜色，不改总开关。彩边要打开「彩边玻璃」才看得到。取色失败时当前配色不变。</string>
+			<string>色条下面的 9:41 用当前颜色、角度和彩边绘制，只在设置里显示。壁纸取色按上、中、下三段铺色；分段失败时改用平均色。失败则保持当前配色。彩边要打开「彩边玻璃」才看得到。</string>
 		</dict>
 		<dict>
 			<key>cell</key>
@@ -251,6 +251,42 @@
 			<false/>
 			<key>defaults</key>
 			<string>com.minis.lockscreengradientclock</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>label</key>
+			<string>早晚方案</string>
+			<key>footerText</key>
+			<string>7:00 套用白天已保存方案，19:00 套用夜晚方案。请先保存方案再选择。只在时段变化时切换一次，可用恢复上一次设置退回。默认关闭。</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>label</key>
+			<string>到点切换已保存方案</string>
+			<key>key</key>
+			<string>scheduleEnabled</string>
+			<key>default</key>
+			<false/>
+			<key>defaults</key>
+			<string>com.minis.lockscreengradientclock</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSButtonCell</string>
+			<key>label</key>
+			<string>白天方案：未选择</string>
+			<key>action</key>
+			<string>chooseDayPalette</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSButtonCell</string>
+			<key>label</key>
+			<string>夜晚方案：未选择</string>
+			<key>action</key>
+			<string>chooseNightPalette</string>
 		</dict>
 		<dict>
 			<key>cell</key>

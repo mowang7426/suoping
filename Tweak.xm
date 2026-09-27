@@ -69,7 +69,7 @@ static CGFloat Clamp(CGFloat x, CGFloat lo, CGFloat hi) {
 }
 static void LoadConfig(void) {
     CFPreferencesAppSynchronize((__bridge CFStringRef)Domain);
-    NSMutableDictionary *values=[@{@"enabled":@YES,@"color1":@"#39D6ED",@"color2":@"#4D7CFF",@"color3":@"#AD4DF5",@"color4":@"#F950B0",@"color5":@"#FFBD61",@"direction":@0,@"opacity":@0.65,@"animate":@NO,@"strictScope":@YES,@"maskMode":@0,@"glassBlend":@YES,@"glassTint":@0.32,@"edgeEnabled":@NO,@"edgePalette":@0,@"edgeCore":@0.22,@"edgeStrength":@0.65,@"edgeWidth":@1.5,@"edgeHighlight":@0.35,@"edgeReveal":@NO,@"customAngleEnabled":@NO,@"gradientAngle":@0,@"customStopsEnabled":@NO,@"stop1":@0,@"stop2":@0.25,@"stop3":@0.5,@"stop4":@0.75,@"stop5":@1,@"reverseColors":@NO,@"independentEdges":@NO,@"edgeColor1":@"#D0FAFF",@"edgeColor2":@"#B39CFF",@"edgeColor3":@"#F7A9DD",@"timeShift":@NO,@"parallaxAngle":@NO} mutableCopy];
+    NSMutableDictionary *values=[@{@"enabled":@YES,@"color1":@"#39D6ED",@"color2":@"#4D7CFF",@"color3":@"#AD4DF5",@"color4":@"#F950B0",@"color5":@"#FFBD61",@"direction":@0,@"opacity":@0.65,@"animate":@NO,@"strictScope":@YES,@"maskMode":@0,@"glassBlend":@YES,@"glassTint":@0.32,@"edgeEnabled":@NO,@"edgePalette":@0,@"edgeCore":@0.22,@"edgeStrength":@0.65,@"edgeWidth":@1.5,@"edgeHighlight":@0.35,@"edgeReveal":@NO,@"customAngleEnabled":@NO,@"gradientAngle":@0,@"customStopsEnabled":@NO,@"stop1":@0,@"stop2":@0.25,@"stop3":@0.5,@"stop4":@0.75,@"stop5":@1,@"reverseColors":@NO,@"independentEdges":@NO,@"edgeColor1":@"#D0FAFF",@"edgeColor2":@"#B39CFF",@"edgeColor3":@"#F7A9DD",@"timeShift":@NO,@"parallaxAngle":@NO,@"scheduleEnabled":@NO} mutableCopy];
     for (NSString *key in values.allKeys) {
         id value=CFBridgingRelease(CFPreferencesCopyAppValue((__bridge CFStringRef)key,(__bridge CFStringRef)Domain));
         if (value) values[key]=value;
@@ -742,33 +742,40 @@ static UIColor *ControllerWallpaperColor(void) {
     }
     return nil;
 }
-static UIColor *AverageOfView(UIView *view) {
+static BOOL BandsOfView(UIView *view,double bands[3][3]) {
     CGSize size=view.bounds.size;
-    if (!view || size.width<2 || size.height<2) return nil;
+    if (!view || size.width<2 || size.height<2) return NO;
+    const int w=18,h=36,rows=h/3;
     UIGraphicsImageRendererFormat *format=[UIGraphicsImageRendererFormat preferredFormat];
     format.opaque=YES; format.scale=1;
-    UIGraphicsImageRenderer *renderer=[[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(24,24) format:format];
+    UIGraphicsImageRenderer *renderer=[[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(w,h) format:format];
     UIImage *image=[renderer imageWithActions:^(UIGraphicsImageRendererContext *context) {
-        CGContextScaleCTM(context.CGContext,24.0/size.width,24.0/size.height);
+        CGContextScaleCTM(context.CGContext,w/size.width,h/size.height);
         [view.layer renderInContext:context.CGContext];
     }];
     CGImageRef cg=image.CGImage;
-    if (!cg) return nil;
-    unsigned char rgba[24*24*4];
+    if (!cg) return NO;
+    unsigned char rgba[18*36*4];
     for (NSUInteger i=0;i<sizeof(rgba);i++) rgba[i]=0;
     CGColorSpaceRef space=CGColorSpaceCreateDeviceRGB();
-    CGContextRef ctx=CGBitmapContextCreate(rgba,24,24,8,24*4,space,kCGImageAlphaPremultipliedLast|kCGBitmapByteOrder32Big);
+    CGContextRef ctx=CGBitmapContextCreate(rgba,w,h,8,w*4,space,kCGImageAlphaPremultipliedLast|kCGBitmapByteOrder32Big);
     CGColorSpaceRelease(space);
-    if (!ctx) return nil;
-    CGContextDrawImage(ctx,CGRectMake(0,0,24,24),cg);
+    if (!ctx) return NO;
+    CGContextDrawImage(ctx,CGRectMake(0,0,w,h),cg);
     CGContextRelease(ctx);
-    double r=0,g=0,b=0; NSUInteger n=0;
-    for (NSUInteger i=0;i<24*24;i++) {
-        if (rgba[i*4+3]<16) continue;
-        r+=rgba[i*4]; g+=rgba[i*4+1]; b+=rgba[i*4+2]; n++;
+    double energy=0;
+    for (int band=0; band<3; band++) {
+        double r=0,g=0,b=0; int n=0;
+        for (int y=band*rows; y<(band+1)*rows; y++) for (int x=0; x<w; x++) {
+            int i=y*w+x;
+            if (rgba[i*4+3]<16) continue;
+            r+=rgba[i*4]; g+=rgba[i*4+1]; b+=rgba[i*4+2]; n++;
+        }
+        if (!n) return NO;
+        bands[band][0]=r/n/255.0; bands[band][1]=g/n/255.0; bands[band][2]=b/n/255.0;
+        energy+=bands[band][0]+bands[band][1]+bands[band][2];
     }
-    if (!n) return nil;
-    return [UIColor colorWithRed:r/n/255.0 green:g/n/255.0 blue:b/n/255.0 alpha:1];
+    return energy>=0.08;
 }
 static NSString *HexRGB(double r,double g,double b) {
     return [NSString stringWithFormat:@"#%02X%02X%02X",(int)lround(Clamp(r,0,1)*255),(int)lround(Clamp(g,0,1)*255),(int)lround(Clamp(b,0,1)*255)];
@@ -783,22 +790,66 @@ static void SampleWallpaper(void) {
     CFPreferencesAppSynchronize((__bridge CFStringRef)Domain);
     id modeValue=CFBridgingRelease(CFPreferencesCopyAppValue(CFSTR("wallpaperSampleMode"),(__bridge CFStringRef)Domain));
     int brighter=[modeValue isKindOfClass:NSNumber.class] && [modeValue integerValue]==1;
-    UIColor *color=ControllerWallpaperColor();
-    BOOL fromSnapshot=NO;
-    if (!color) { color=AverageOfView(WallpaperView()); fromSnapshot=YES; }
-    double r=0,g=0,b=0;
-    if (!color || !ColorRGB(color,&r,&g,&b) || (fromSnapshot && r+g+b<0.02)) {
-        WriteSampleMessage(@"没有读到壁纸颜色，当前配色未改变。",NO);
-        return;
+    double colors[5][3],edges[3][3],bands[3][3];
+    NSString *message=nil;
+    if (BandsOfView(WallpaperView(),bands)) {
+        LSGCBandPalette(bands,brighter,colors,edges);
+        message=brighter?@"已按壁纸上中下更亮一档写入。":@"已按壁纸上中下三段写入。";
+    } else {
+        UIColor *color=ControllerWallpaperColor();
+        double r=0,g=0,b=0;
+        if (!color || !ColorRGB(color,&r,&g,&b)) {
+            WriteSampleMessage(@"没有读到壁纸颜色，当前配色未改变。",NO);
+            return;
+        }
+        LSGCWallpaperPalette(r,g,b,brighter,colors,edges);
+        message=brighter?@"未能分段，已按平均色的更亮一档写入。":@"未能分段，已按壁纸平均色写入。";
     }
-    double colors[5][3],edges[3][3];
-    LSGCWallpaperPalette(r,g,b,brighter,colors,edges);
     NSString *keys[5]={@"color1",@"color2",@"color3",@"color4",@"color5"};
     for (int i=0;i<5;i++) CFPreferencesSetAppValue((__bridge CFStringRef)keys[i],(__bridge CFStringRef)HexRGB(colors[i][0],colors[i][1],colors[i][2]),(__bridge CFStringRef)Domain);
     NSString *edgeKeys[3]={@"edgeColor1",@"edgeColor2",@"edgeColor3"};
     for (int i=0;i<3;i++) CFPreferencesSetAppValue((__bridge CFStringRef)edgeKeys[i],(__bridge CFStringRef)HexRGB(edges[i][0],edges[i][1],edges[i][2]),(__bridge CFStringRef)Domain);
     CFPreferencesSetAppValue(CFSTR("independentEdges"),(__bridge CFNumberRef)@YES,(__bridge CFStringRef)Domain);
-    WriteSampleMessage(brighter?@"已按更亮一档写入壁纸配色。":@"已按贴近壁纸写入配色。",YES);
+    WriteSampleMessage(message,YES);
+}
+static CFStringRef const VisualsChanged=CFSTR("com.minis.lockscreengradientclock/visualsChanged");
+static CFTimeInterval ScheduleStamp;
+static int CurrentSlot(void) {
+    NSDateComponents *parts=[[NSCalendar currentCalendar] components:NSCalendarUnitHour fromDate:[NSDate date]];
+    return (parts.hour>=7 && parts.hour<19) ? 0 : 1;
+}
+static NSDictionary *PaletteValuesNamed(NSString *name) {
+    if (![name isKindOfClass:NSString.class] || !name.length) return nil;
+    id stored=CFBridgingRelease(CFPreferencesCopyAppValue(CFSTR("savedPalettes"),(__bridge CFStringRef)Domain));
+    if (![stored isKindOfClass:NSArray.class]) return nil;
+    for (id item in stored) {
+        if (![item isKindOfClass:NSDictionary.class]) continue;
+        if ([item[@"name"] isEqual:name] && [item[@"values"] isKindOfClass:NSDictionary.class]) return item[@"values"];
+    }
+    return nil;
+}
+static void MaybeApplySchedule(BOOL force) {
+    if (![Config[@"scheduleEnabled"] boolValue]) return;
+    CFTimeInterval now=CACurrentMediaTime();
+    if (!force && ScheduleStamp>0 && now-ScheduleStamp<20) return;
+    ScheduleStamp=now;
+    int slot=CurrentSlot();
+    id applied=CFBridgingRelease(CFPreferencesCopyAppValue(CFSTR("scheduleAppliedSlot"),(__bridge CFStringRef)Domain));
+    if ([applied isKindOfClass:NSNumber.class] && [applied intValue]==slot) return;
+    NSString *nameKey=slot==0?@"dayPaletteName":@"nightPaletteName";
+    NSString *name=CFBridgingRelease(CFPreferencesCopyAppValue((__bridge CFStringRef)nameKey,(__bridge CFStringRef)Domain));
+    NSDictionary *values=PaletteValuesNamed(name);
+    if (!values) return;
+    NSArray *keys=@[@"color1",@"color2",@"color3",@"color4",@"color5",@"edgeColor1",@"edgeColor2",@"edgeColor3",@"direction",@"opacity",@"animate",@"glassBlend",@"glassTint",@"edgeEnabled",@"edgePalette",@"edgeCore",@"edgeStrength",@"edgeWidth",@"edgeHighlight",@"edgeReveal",@"customAngleEnabled",@"gradientAngle",@"customStopsEnabled",@"stop1",@"stop2",@"stop3",@"stop4",@"stop5",@"reverseColors",@"independentEdges",@"timeShift",@"parallaxAngle"];
+    for (NSString *key in keys) {
+        id value=values[key];
+        if (value) CFPreferencesSetAppValue((__bridge CFStringRef)key,(__bridge CFPropertyListRef)value,(__bridge CFStringRef)Domain);
+    }
+    CFPreferencesSetAppValue(CFSTR("scheduleAppliedSlot"),(__bridge CFNumberRef)@(slot),(__bridge CFStringRef)Domain);
+    CFPreferencesAppSynchronize((__bridge CFStringRef)Domain);
+    LoadConfig();
+    CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),Changed,NULL,NULL,true);
+    CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),VisualsChanged,NULL,NULL,true);
 }
 static void Notification(CFNotificationCenterRef center,void *observer,CFStringRef name,const void *object,CFDictionaryRef info) {
     (void)center; (void)observer; (void)object; (void)info;
@@ -807,7 +858,7 @@ static void Notification(CFNotificationCenterRef center,void *observer,CFStringR
     dispatch_async(dispatch_get_main_queue(), ^{
         if (diagnostic) { WriteDiagnostics(); return; }
         if (sample) { SampleWallpaper(); return; }
-        LoadConfig(); Discover();
+        LoadConfig(); MaybeApplySchedule(YES); Discover();
         for (UILabel *label in Labels.allObjects) Schedule(label);
     });
 }
@@ -824,12 +875,14 @@ __attribute__((constructor)) static void Start(void) {
             CFNotificationCenterAddObserver(center,NULL,Notification,Changed,NULL,CFNotificationSuspensionBehaviorDeliverImmediately);
             CFNotificationCenterAddObserver(center,NULL,Notification,Diagnose,NULL,CFNotificationSuspensionBehaviorDeliverImmediately);
             CFNotificationCenterAddObserver(center,NULL,Notification,Sample,NULL,CFNotificationSuspensionBehaviorDeliverImmediately);
+            MaybeApplySchedule(YES);
             _dyld_register_func_for_add_image(AddedImage);
             Discover();
-            [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *note) { (void)note; Discover(); }];
+            [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *note) { (void)note; MaybeApplySchedule(YES); Discover(); }];
             // Low-frequency geometry maintenance; no repeated bitmap work unless signature changes.
             NSTimer *timer=[NSTimer timerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *t) {
                 (void)t;
+                MaybeApplySchedule(NO);
                 for (UILabel *label in Labels.allObjects) {
                     if (Visible(label)) Apply(label);
                     else RemoveOverlay(label);

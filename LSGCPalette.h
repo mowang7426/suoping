@@ -71,3 +71,32 @@ static inline void LSGCWallpaperPalette(double r, double g, double b, int bright
     double edgeBri = fmin(1.0, fmax(bri, 0.9));
     for (int i = 0; i < 3; i++) LSGCHsbToRgb(h + edgeOffsets[i], edgeSat, edgeBri, &edges[i][0], &edges[i][1], &edges[i][2]);
 }
+static inline void LSGCMix3(const double a[3], const double b[3], double t, double out[3]) {
+    out[0] = LSGCUnit(a[0] * (1.0 - t) + b[0] * t);
+    out[1] = LSGCUnit(a[1] * (1.0 - t) + b[1] * t);
+    out[2] = LSGCUnit(a[2] * (1.0 - t) + b[2] * t);
+}
+static inline void LSGCPrepareBand(const double in[3], int brighter, double out[3]) {
+    double r, g, b, h, s, v;
+    LSGCShiftRGB(in[0], in[1], in[2], 0, brighter ? 0.75 : 1, brighter ? 1.18 : 1, &r, &g, &b);
+    if (brighter) {
+        LSGCRgbToHsb(r, g, b, &h, &s, &v);
+        if (v < 0.72) v = 0.72;
+        LSGCHsbToRgb(h, s, v, &r, &g, &b);
+    }
+    out[0] = r; out[1] = g; out[2] = b;
+}
+static inline void LSGCBandPalette(const double bands[3][3], int brighter, double colors[5][3], double edges[3][3]) {
+    double band[3][3];
+    for (int i = 0; i < 3; i++) LSGCPrepareBand(bands[i], brighter, band[i]);
+    colors[0][0] = band[0][0]; colors[0][1] = band[0][1]; colors[0][2] = band[0][2];
+    LSGCMix3(band[0], band[1], 0.5, colors[1]);
+    colors[2][0] = band[1][0]; colors[2][1] = band[1][1]; colors[2][2] = band[1][2];
+    LSGCMix3(band[1], band[2], 0.5, colors[3]);
+    colors[4][0] = band[2][0]; colors[4][1] = band[2][1]; colors[4][2] = band[2][2];
+    for (int i = 0; i < 3; i++) {
+        double h, s, v;
+        LSGCRgbToHsb(band[i][0], band[i][1], band[i][2], &h, &s, &v);
+        LSGCHsbToRgb(h, s * 0.45, fmin(1.0, fmax(v, 0.88)), &edges[i][0], &edges[i][1], &edges[i][2]);
+    }
+}
