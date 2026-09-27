@@ -156,16 +156,11 @@ static UIView *DateOverlayParent(UILabel *label) {
     }
     return dateView;
 }
-static BOOL IsDateCandidate(UILabel *label) {
-    if (![Config[@"dateGradient"] boolValue]) return NO;
-    NSString *text=label.text ?: label.attributedText.string;
-    return ClockDateText(text) && InLockScreen(label);
-}
 static void Schedule(UILabel *label) {
     if (!NSThread.isMainThread || Rendering) return;
     BOOL tracked=objc_getAssociatedObject(label,&StateKey)!=nil;
     BOOL glass=GlassClass && [label isKindOfClass:GlassClass];
-    if (!tracked && !glass && !DateOverlayParent(label) && !IsDateCandidate(label)) return;
+    if (!tracked && !glass && !DateOverlayParent(label)) return;
     if (objc_getAssociatedObject(label,&PendingKey)) return;
     objc_setAssociatedObject(label,&PendingKey,@YES,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     __weak UILabel *weak=label;
@@ -793,7 +788,6 @@ static void InstallHooks(void) {
 }
 static void (*OrigLabelLayout)(id,SEL);
 static void (*OrigLabelMove)(id,SEL);
-static void (*OrigLabelSuperview)(id,SEL);
 static void (*OrigLabelText)(id,SEL,id);
 static void (*OrigLabelAttributed)(id,SEL,id);
 static void LabelLayout(id obj,SEL sel) {
@@ -801,9 +795,6 @@ static void LabelLayout(id obj,SEL sel) {
 }
 static void LabelMove(id obj,SEL sel) {
     OrigLabelMove(obj,sel); Schedule((UILabel *)obj);
-}
-static void LabelSuperview(id obj,SEL sel) {
-    OrigLabelSuperview(obj,sel); Schedule((UILabel *)obj);
 }
 static void LabelText(id obj,SEL sel,id value) {
     OrigLabelText(obj,sel,value); Schedule((UILabel *)obj);
@@ -816,16 +807,19 @@ static void InstallLabelHooks(void) {
     Class cls=UILabel.class;
     Method layout=class_getInstanceMethod(cls,@selector(layoutSubviews));
     Method move=class_getInstanceMethod(cls,@selector(didMoveToWindow));
-    Method superview=class_getInstanceMethod(cls,@selector(didMoveToSuperview));
     Method text=class_getInstanceMethod(cls,@selector(setText:));
     Method attributed=class_getInstanceMethod(cls,@selector(setAttributedText:));
-    if (!layout || !move || !superview || !text || !attributed) return;
+    if (!layout || !move || !text || !attributed) return;
     MSHookMessageEx(cls,@selector(layoutSubviews),(IMP)LabelLayout,(IMP *)&OrigLabelLayout);
     MSHookMessageEx(cls,@selector(didMoveToWindow),(IMP)LabelMove,(IMP *)&OrigLabelMove);
-    MSHookMessageEx(cls,@selector(didMoveToSuperview),(IMP)LabelSuperview,(IMP *)&OrigLabelSuperview);
     MSHookMessageEx(cls,@selector(setText:),(IMP)LabelText,(IMP *)&OrigLabelText);
     MSHookMessageEx(cls,@selector(setAttributedText:),(IMP)LabelAttributed,(IMP *)&OrigLabelAttributed);
-    LabelHooked=OrigLabelLayout && OrigLabelMove && OrigLabelSuperview && OrigLabelText && OrigLabelAttributed;
+    LabelHooked=OrigLabelLayout && OrigLabelMove && OrigLabelText && OrigLabelAttributed;
+}
+static BOOL IsDateCandidate(UILabel *label) {
+    if (![Config[@"dateGradient"] boolValue]) return NO;
+    NSString *text=label.text ?: label.attributedText.string;
+    return ClockDateText(text) && InLockScreen(label);
 }
 static void Walk(UIView *view,NSUInteger depth) {
     if (!view || depth>64) return;
@@ -1082,13 +1076,9 @@ __attribute__((constructor)) static void Start(void) {
                 dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(delay.doubleValue*NSEC_PER_SEC)),dispatch_get_main_queue(), ^{ RetryDateDiscover(); });
             }
             // Low-frequency geometry maintenance; no repeated bitmap work unless signature changes.
-            __block NSUInteger dateMisses=0;
             NSTimer *timer=[NSTimer timerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *t) {
                 (void)t;
                 MaybeApplySchedule(NO);
-                if ([Config[@"dateGradient"] boolValue] && !DateOverlayAttached()) {
-                    if ((++dateMisses%4)==1) Discover();
-                } else dateMisses=0;
                 for (UILabel *label in Labels.allObjects) {
                     if (Visible(DateOverlayParent(label) ?: label)) Apply(label);
                     else RemoveOverlay(label);
