@@ -764,6 +764,7 @@ static void Walk(UIView *view,NSUInteger depth) {
 }
 static void Discover(void) {
     InstallHooks();
+    for (UIWindow *window in UIApplication.sharedApplication.windows) Walk(window,0);
     for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
         if (![scene isKindOfClass:UIWindowScene.class]) continue;
         for (UIWindow *window in ((UIWindowScene *)scene).windows) Walk(window,0);
