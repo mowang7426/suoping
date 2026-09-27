@@ -137,25 +137,35 @@ static BOOL Visible(UIView *view) {
     for (UIView *v=view; v; v=v.superview) if (v.hidden || v.alpha<0.01) return NO;
     return YES;
 }
+static BOOL IsDateSubtitleView(NSString *name) {
+    return [name isEqualToString:@"CSProminentSubtitleDateView"] ||
+        [name containsString:@"SubtitleDate"] ||
+        [name containsString:@"LockScreenDateSubtitle"];
+}
+static BOOL IsVibrancyView(NSString *name) {
+    return [name isEqualToString:@"BSUIVibrancyEffectView"] || [name hasSuffix:@"VibrancyEffectView"];
+}
 static UIView *DateOverlayParent(UILabel *label) {
     BOOL subtitle=NO;
+    UIView *dateView=nil;
     for (UIView *view=label.superview;view;view=view.superview) {
         NSString *name=NSStringFromClass(view.class);
-        if ([name isEqualToString:@"CSProminentSubtitleDateView"]) {
-            if (view.hidden || view.alpha<0.01) return nil;
-            subtitle=YES;
-        }
+        if (IsDateSubtitleView(name)) { subtitle=YES; dateView=view; }
         // Place color outside the monochrome vibrancy/portal composition.
-        if (subtitle && [name isEqualToString:@"BSUIVibrancyEffectView"])
-            return view.superview;
+        if (subtitle && IsVibrancyView(name)) return view.superview;
     }
-    return nil;
+    return dateView;
+}
+static BOOL IsDateCandidate(UILabel *label) {
+    if (![Config[@"dateGradient"] boolValue]) return NO;
+    NSString *text=label.text ?: label.attributedText.string;
+    return ClockDateText(text) && InLockScreen(label);
 }
 static void Schedule(UILabel *label) {
     if (!NSThread.isMainThread || Rendering) return;
     BOOL tracked=objc_getAssociatedObject(label,&StateKey)!=nil;
     BOOL glass=GlassClass && [label isKindOfClass:GlassClass];
-    if (!tracked && !glass && !DateOverlayParent(label)) return;
+    if (!tracked && !glass && !DateOverlayParent(label) && !IsDateCandidate(label)) return;
     if (objc_getAssociatedObject(label,&PendingKey)) return;
     objc_setAssociatedObject(label,&PendingKey,@YES,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     __weak UILabel *weak=label;
@@ -783,6 +793,7 @@ static void InstallHooks(void) {
 }
 static void (*OrigLabelLayout)(id,SEL);
 static void (*OrigLabelMove)(id,SEL);
+static void (*OrigLabelSuperview)(id,SEL);
 static void (*OrigLabelText)(id,SEL,id);
 static void (*OrigLabelAttributed)(id,SEL,id);
 static void LabelLayout(id obj,SEL sel) {
@@ -790,6 +801,9 @@ static void LabelLayout(id obj,SEL sel) {
 }
 static void LabelMove(id obj,SEL sel) {
     OrigLabelMove(obj,sel); Schedule((UILabel *)obj);
+}
+static void LabelSuperview(id obj,SEL sel) {
+    OrigLabelSuperview(obj,sel); Schedule((UILabel *)obj);
 }
 static void LabelText(id obj,SEL sel,id value) {
     OrigLabelText(obj,sel,value); Schedule((UILabel *)obj);
@@ -802,14 +816,16 @@ static void InstallLabelHooks(void) {
     Class cls=UILabel.class;
     Method layout=class_getInstanceMethod(cls,@selector(layoutSubviews));
     Method move=class_getInstanceMethod(cls,@selector(didMoveToWindow));
+    Method superview=class_getInstanceMethod(cls,@selector(didMoveToSuperview));
     Method text=class_getInstanceMethod(cls,@selector(setText:));
     Method attributed=class_getInstanceMethod(cls,@selector(setAttributedText:));
-    if (!layout || !move || !text || !attributed) return;
+    if (!layout || !move || !superview || !text || !attributed) return;
     MSHookMessageEx(cls,@selector(layoutSubviews),(IMP)LabelLayout,(IMP *)&OrigLabelLayout);
     MSHookMessageEx(cls,@selector(didMoveToWindow),(IMP)LabelMove,(IMP *)&OrigLabelMove);
+    MSHookMessageEx(cls,@selector(didMoveToSuperview),(IMP)LabelSuperview,(IMP *)&OrigLabelSuperview);
     MSHookMessageEx(cls,@selector(setText:),(IMP)LabelText,(IMP *)&OrigLabelText);
     MSHookMessageEx(cls,@selector(setAttributedText:),(IMP)LabelAttributed,(IMP *)&OrigLabelAttributed);
-    LabelHooked=OrigLabelLayout && OrigLabelMove && OrigLabelText && OrigLabelAttributed;
+    LabelHooked=OrigLabelLayout && OrigLabelMove && OrigLabelSuperview && OrigLabelText && OrigLabelAttributed;
 }
 static void Walk(UIView *view,NSUInteger depth) {
     if (!view || depth>64) return;
@@ -817,7 +833,7 @@ static void Walk(UIView *view,NSUInteger depth) {
     if ([view isKindOfClass:UILabel.class]) {
         UILabel *label=(UILabel *)view;
         BOOL glassLabel=GlassClass && [view isKindOfClass:GlassClass];
-        BOOL dateLabel=!glassLabel && DateOverlayParent(label)!=nil;
+        BOOL dateLabel=!glassLabel && (DateOverlayParent(label)!=nil || IsDateCandidate(label));
         if (glassLabel || dateLabel) { [Labels addObject:label]; Schedule(label); }
     }
     for (UIView *child in view.subviews) Walk(child,depth+1);
@@ -834,6 +850,22 @@ static void Discover(void) {
         if (![scene isKindOfClass:UIWindowScene.class]) continue;
         for (UIWindow *window in ((UIWindowScene *)scene).windows) Walk(window,0);
     }
+}
+static BOOL DateOverlayAttached(void) {
+    for (UILabel *label in Labels.allObjects) {
+        LSGCState *s=objc_getAssociatedObject(label,&StateKey);
+        if (s.dateHost.superlayer) return YES;
+    }
+    return NO;
+}
+static void DiscoverAndApply(void) {
+    Discover();
+    for (UILabel *label in Labels.allObjects) Schedule(label);
+}
+static void RetryDateDiscover(void) {
+    LoadConfig();
+    if (![Config[@"dateGradient"] boolValue] || DateOverlayAttached()) return;
+    DiscoverAndApply();
 }
 static void WriteDiagnostics(void) {
     Discover();
@@ -1020,8 +1052,7 @@ static void Notification(CFNotificationCenterRef center,void *observer,CFStringR
     dispatch_async(dispatch_get_main_queue(), ^{
         if (diagnostic) { WriteDiagnostics(); return; }
         if (sample) { SampleWallpaper(); return; }
-        LoadConfig(); MaybeApplySchedule(YES); Discover();
-        for (UILabel *label in Labels.allObjects) Schedule(label);
+        LoadConfig(); MaybeApplySchedule(YES); DiscoverAndApply();
     });
 }
 static void AddedImage(const struct mach_header *header,intptr_t slide) {
@@ -1039,14 +1070,27 @@ __attribute__((constructor)) static void Start(void) {
             CFNotificationCenterAddObserver(center,NULL,Notification,Sample,NULL,CFNotificationSuspensionBehaviorDeliverImmediately);
             MaybeApplySchedule(YES);
             _dyld_register_func_for_add_image(AddedImage);
-            Discover();
-            [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *note) { (void)note; MaybeApplySchedule(YES); Discover(); }];
+            DiscoverAndApply();
+            NSNotificationCenter *notes=NSNotificationCenter.defaultCenter;
+            NSOperationQueue *queue=NSOperationQueue.mainQueue;
+            void (^refresh)(NSNotification *)=^(NSNotification *note) { (void)note; MaybeApplySchedule(YES); DiscoverAndApply(); };
+            [notes addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:queue usingBlock:refresh];
+            [notes addObserverForName:UIApplicationDidFinishLaunchingNotification object:nil queue:queue usingBlock:refresh];
+            [notes addObserverForName:UIApplicationWillEnterForegroundNotification object:nil queue:queue usingBlock:refresh];
+            [notes addObserverForName:UIScreenDidConnectNotification object:nil queue:queue usingBlock:refresh];
+            for (NSNumber *delay in @[@0.4,@1.2,@3.0,@8.0]) {
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(delay.doubleValue*NSEC_PER_SEC)),dispatch_get_main_queue(), ^{ RetryDateDiscover(); });
+            }
             // Low-frequency geometry maintenance; no repeated bitmap work unless signature changes.
+            __block NSUInteger dateMisses=0;
             NSTimer *timer=[NSTimer timerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *t) {
                 (void)t;
                 MaybeApplySchedule(NO);
+                if ([Config[@"dateGradient"] boolValue] && !DateOverlayAttached()) {
+                    if ((++dateMisses%4)==1) Discover();
+                } else dateMisses=0;
                 for (UILabel *label in Labels.allObjects) {
-                     if (Visible(DateOverlayParent(label) ?: label)) Apply(label);
+                    if (Visible(DateOverlayParent(label) ?: label)) Apply(label);
                     else RemoveOverlay(label);
                 }
             }];
