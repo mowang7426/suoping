@@ -24,12 +24,14 @@ static NSDictionary *Config;
 static NSHashTable<UILabel *> *Labels;
 static Class GlassClass;
 static BOOL Hooked;
+static BOOL LabelHooked;
 static NSString *HookReport;
 static char StateKey, PendingKey;
 static BOOL Rendering;
 static NSUInteger Revision;
 static void Apply(UILabel *label);
 static void InstallHooks(void);
+static void InstallLabelHooks(void);
 static void Discover(void);
 
 @interface LSGCState : NSObject
@@ -706,6 +708,7 @@ static void Hook(const char *name,IMP replacement,IMP *original,NSUInteger argum
     NoteHook(name,original && *original);
 }
 static void InstallHooks(void) {
+    InstallLabelHooks();
     if (Hooked) return;
     Class cls=NSClassFromString(@"CCLiquidGlassLabel");
     if (!cls || ![cls isSubclassOfClass:UILabel.class]) return;
@@ -718,6 +721,36 @@ static void InstallHooks(void) {
     Hook("setTextMaskLayer:",(IMP)Mask,(IMP *)&OrigMask,3);
     Hook("setCachedBuildFinished:",(IMP)Finished,(IMP *)&OrigFinished,3);
     Hooked=OrigLayout!=NULL;
+}
+static void (*OrigLabelLayout)(id,SEL);
+static void (*OrigLabelMove)(id,SEL);
+static void (*OrigLabelText)(id,SEL,id);
+static void (*OrigLabelAttributed)(id,SEL,id);
+static void LabelLayout(id obj,SEL sel) {
+    OrigLabelLayout(obj,sel); Schedule((UILabel *)obj);
+}
+static void LabelMove(id obj,SEL sel) {
+    OrigLabelMove(obj,sel); Schedule((UILabel *)obj);
+}
+static void LabelText(id obj,SEL sel,id value) {
+    OrigLabelText(obj,sel,value); Schedule((UILabel *)obj);
+}
+static void LabelAttributed(id obj,SEL sel,id value) {
+    OrigLabelAttributed(obj,sel,value); Schedule((UILabel *)obj);
+}
+static void InstallLabelHooks(void) {
+    if (LabelHooked) return;
+    Class cls=UILabel.class;
+    Method layout=class_getInstanceMethod(cls,@selector(layoutSubviews));
+    Method move=class_getInstanceMethod(cls,@selector(didMoveToWindow));
+    Method text=class_getInstanceMethod(cls,@selector(setText:));
+    Method attributed=class_getInstanceMethod(cls,@selector(setAttributedText:));
+    if (!layout || !move || !text || !attributed) return;
+    MSHookMessageEx(cls,@selector(layoutSubviews),(IMP)LabelLayout,(IMP *)&OrigLabelLayout);
+    MSHookMessageEx(cls,@selector(didMoveToWindow),(IMP)LabelMove,(IMP *)&OrigLabelMove);
+    MSHookMessageEx(cls,@selector(setText:),(IMP)LabelText,(IMP *)&OrigLabelText);
+    MSHookMessageEx(cls,@selector(setAttributedText:),(IMP)LabelAttributed,(IMP *)&OrigLabelAttributed);
+    LabelHooked=OrigLabelLayout && OrigLabelMove && OrigLabelText && OrigLabelAttributed;
 }
 static void Walk(UIView *view,NSUInteger depth) {
     if (!view || depth>64) return;
