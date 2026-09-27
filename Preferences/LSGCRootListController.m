@@ -268,30 +268,33 @@ static UIColor *LSGCHexColor(NSString *hex) {
     BOOL edges=[self prefNumber:@"edgeEnabled" fallback:0]>=0.5;
     UIColor *edgeColor=LSGCHexColor([self prefString:@"edgeColor1" fallback:@"#D0FAFF"]);
     NSString *text=@"9:41";
-    UIFont *font=[UIFont monospacedDigitSystemFontOfSize:MIN(64,size.height*0.72) weight:UIFontWeightBold];
+    UIFont *font=[UIFont monospacedDigitSystemFontOfSize:MIN(52,size.height*0.62) weight:UIFontWeightBold];
     NSDictionary *fillAttrs=@{NSFontAttributeName:font,NSForegroundColorAttributeName:UIColor.whiteColor};
     CGSize textSize=[text sizeWithAttributes:fillAttrs];
-    CGPoint origin=CGPointMake((size.width-textSize.width)/2,(size.height-textSize.height)/2);
-    UIGraphicsBeginImageContextWithOptions(size,NO,0);
-    [text drawAtPoint:origin withAttributes:fillAttrs];
-    UIImage *mask=UIGraphicsGetImageFromCurrentImageContext();
-    UIGraphicsEndImageContext();
-    UIGraphicsBeginImageContextWithOptions(size,NO,0);
-    CGContextRef ctx=UIGraphicsGetCurrentContext();
-    if (edges) {
-        NSDictionary *strokeAttrs=@{NSFontAttributeName:font,NSForegroundColorAttributeName:UIColor.clearColor,NSStrokeColorAttributeName:edgeColor,NSStrokeWidthAttributeName:@8};
-        [text drawAtPoint:origin withAttributes:strokeAttrs];
-    }
-    CGContextSaveGState(ctx);
-    if (mask.CGImage) CGContextClipToMask(ctx,CGRectMake(0,0,size.width,size.height),mask.CGImage);
-    double angle=[self prefNumber:@"customAngleEnabled" fallback:0]>=0.5 ? [self prefNumber:@"gradientAngle" fallback:0] : ([self prefNumber:@"direction" fallback:0]==1 ? 90 : ([self prefNumber:@"direction" fallback:0]==2 ? 45 : 0));
+    CGPoint origin=CGPointMake((size.width-textSize.width)/2.0,(size.height-textSize.height)/2.0);
+    double direction=[self prefNumber:@"direction" fallback:0];
+    double angle=[self prefNumber:@"customAngleEnabled" fallback:0]>=0.5 ? [self prefNumber:@"gradientAngle" fallback:0] : (direction==1 ? 90 : (direction==2 ? 45 : 0));
     double endpoints[4];
     LSGCGradientEndpoints(angle,size.width,size.height,endpoints);
     CGColorSpaceRef space=CGColorSpaceCreateDeviceRGB();
     CGFloat locs[5]={0,0.25,0.5,0.75,1};
     CGGradientRef gradient=CGGradientCreateWithColorComponents(space,comps,locs,5);
-    if (ctx && gradient) CGContextDrawLinearGradient(ctx,gradient,CGPointMake(endpoints[0]*size.width,endpoints[1]*size.height),CGPointMake(endpoints[2]*size.width,endpoints[3]*size.height),0);
-    CGContextRestoreGState(ctx);
+    UIGraphicsBeginImageContextWithOptions(size,NO,0);
+    CGContextRef fillCtx=UIGraphicsGetCurrentContext();
+    if (fillCtx && gradient) {
+        CGContextDrawLinearGradient(fillCtx,gradient,CGPointMake(endpoints[0]*size.width,endpoints[1]*size.height),CGPointMake(endpoints[2]*size.width,endpoints[3]*size.height),0);
+        CGContextSetBlendMode(fillCtx,kCGBlendModeDestinationIn);
+        [text drawAtPoint:origin withAttributes:fillAttrs];
+    }
+    UIImage *filled=UIGraphicsGetImageFromCurrentImageContext();
+    UIGraphicsEndImageContext();
+    UIGraphicsBeginImageContextWithOptions(size,NO,0);
+    if (edges) {
+        CGFloat stroke=MAX(1.25,MIN(3.5,[self prefNumber:@"edgeWidth" fallback:1.5]));
+        NSDictionary *strokeAttrs=@{NSFontAttributeName:font,NSForegroundColorAttributeName:UIColor.clearColor,NSStrokeColorAttributeName:edgeColor,NSStrokeWidthAttributeName:@(stroke/font.pointSize*100.0)};
+        [text drawAtPoint:origin withAttributes:strokeAttrs];
+    }
+    [filled drawAtPoint:CGPointZero];
     UIImage *image=UIGraphicsGetImageFromCurrentImageContext();
     UIGraphicsEndImageContext();
     if (gradient) CGGradientRelease(gradient);

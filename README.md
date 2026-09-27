@@ -1,6 +1,12 @@
-# LockScreenGradientClock 1.7.0 — 字形预览、分段取色、早晚方案
+# LockScreenGradientClock 1.7.1 — 字形预览对齐
 
-## 1.7.0 当前版本
+## 1.7.1 当前版本
+
+设置页「9:41」预览改为在同一套坐标里先画渐变字、再叠细彩边。上一版蒙版和描边各画一次，字形会错开叠成双层。
+
+从 1.7.0 替换：Preferences/LSGCRootListController.m、control、Preferences/Resources/Info.plist、LSGCVersion.h。
+
+## 1.7.0 历史更新
 
 设置页色条下有一行「9:41」，按当前五种颜色、角度和彩边绘制，只在设置里显示。壁纸取色改为上、中、下三段铺成五色；分段失败时退回平均色，再失败则保持当前配色。
 
