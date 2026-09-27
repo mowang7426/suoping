@@ -1,6 +1,12 @@
-# LockScreenGradientClock 1.7.2 — 字形预览重新裁字
+# LockScreenGradientClock 1.7.3 — 预览字形吃到渐变
 
-## 1.7.2 当前版本
+## 1.7.3 当前版本
+
+设置页「9:41」的笔画改为渐变填充，字外不再铺一整条色带。1.7.2 把白字盖在渐变上，改颜色时字形仍是白的。
+
+从 1.7.2 替换：Preferences/LSGCRootListController.m、control、Preferences/Resources/Info.plist、LSGCVersion.h。
+
+## 1.7.2 历史更新
 
 设置页「9:41」先画成字形图，再用这张图裁渐变。1.7.1 直接对文字设置混合模式，裁切没有生效，预览变成一整条渐变。
 
