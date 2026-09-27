@@ -22,6 +22,7 @@ static CGFloat ParallaxDegrees;
 static CFTimeInterval ParallaxStamp;
 static NSDictionary *Config;
 static NSHashTable<UILabel *> *Labels;
+static NSHashTable<UIView *> *DateViews;
 static Class GlassClass;
 static BOOL Hooked;
 static BOOL LabelHooked;
@@ -108,7 +109,10 @@ static BOOL ClockDateText(NSString *s) {
     if (!hasDateMarker) return NO;
     NSUInteger digits=0;
     for (NSUInteger i=0;i<s.length;i++) if ([NSCharacterSet.decimalDigitCharacterSet characterIsMember:[s characterAtIndex:i]]) digits++;
-    return digits>0 || [s containsString:@"星期"] || [s containsString:@"周"] || [s containsString:@"农历"];
+    if (digits>0 || [s containsString:@"星期"] || [s containsString:@"周"] || [s containsString:@"农历"]) return YES;
+    // Lunar dates commonly omit both Arabic digits and the calendar name.
+    return [s rangeOfString:@"[闰閏]?(正|冬|腊|臘|十[一二]?|[一二三四五六七八九])月(初[一二三四五六七八九十]|十[一二三四五六七八九]?|二十|廿[一二三四五六七八九]?|三十)"
+                   options:NSRegularExpressionSearch].location!=NSNotFound;
 }
 static BOOL GradientText(NSString *s) {
     return TimeText(s) || ([Config[@"dateGradient"] boolValue] && ClockDateText(s));
@@ -132,7 +136,11 @@ static BOOL Visible(UIView *view) {
     return YES;
 }
 static void Schedule(UILabel *label) {
-    if (!NSThread.isMainThread) return;
+    if (!NSThread.isMainThread || Rendering) return;
+    BOOL tracked=objc_getAssociatedObject(label,&StateKey)!=nil;
+    BOOL glass=GlassClass && [label isKindOfClass:GlassClass];
+    if (!tracked && !glass && (!label.window || !InLockScreen(label) ||
+        !ClockDateText(label.text ?: label.attributedText.string))) return;
     if (objc_getAssociatedObject(label,&PendingKey)) return;
     objc_setAssociatedObject(label,&PendingKey,@YES,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     __weak UILabel *weak=label;
@@ -584,18 +592,20 @@ static void RemoveOverlay(UILabel *label) {
     s.signature=nil; s.revision=0;
 }
 static NSString *DateSignature(UILabel *label) {
-    return [NSString stringWithFormat:@"date|%@|%@|%@|%.2f|%.2f|%ld",
-        label.text ?: label.attributedText.string ?: @"",label.font.description ?: @"",
-        NSStringFromCGSize(label.bounds.size),label.bounds.origin.x,label.bounds.origin.y,(long)label.numberOfLines];
+    return [NSString stringWithFormat:@"date|%@|%@|%@|%ld|%ld|%ld|%d|%g|%ld",
+        label.attributedText ?: (id)label.text, label.font, NSStringFromCGRect(label.bounds),
+        (long)label.numberOfLines,(long)label.textAlignment,(long)label.lineBreakMode,
+        label.adjustsFontSizeToFitWidth,label.minimumScaleFactor,(long)label.baselineAdjustment];
 }
 static void Apply(UILabel *label) {
     if (!NSThread.isMainThread) return;
     [Labels addObject:label];
     BOOL isGlassLabel=GlassClass && [label isKindOfClass:GlassClass];
-    BOOL dateCandidate=!isGlassLabel && ClockDateText(label.text ?: label.attributedText.string);
+    BOOL dateCandidate=!isGlassLabel && !TimeText(label.text ?: label.attributedText.string) &&
+        InLockScreen(label) && ClockDateText(label.text ?: label.attributedText.string);
     BOOL dateLabel=dateCandidate && [Config[@"dateGradient"] boolValue];
     if (dateCandidate && !dateLabel) { RemoveOverlay(label); return; }
-    if (!dateLabel && (!GlassClass || ![label isKindOfClass:GlassClass])) return;
+    if (!dateLabel && !isGlassLabel) { RemoveOverlay(label); return; }
     BOOL scoped=dateLabel || ![Config[@"strictScope"] boolValue] || InLockScreen(label);
     if (![Config[@"enabled"] boolValue] || !Visible(label) || !GradientText(label.text ?: label.attributedText.string) ||
         !scoped || label.bounds.size.width<1 || label.bounds.size.height<1 ||
@@ -611,7 +621,7 @@ static void Apply(UILabel *label) {
     CALayer *source=nil,*host=nil;
     BOOL native=NO,glass=NO,edges=NO; NSUInteger motion=0; CGFloat scale=1;
     NSString *signature;
-    if (dateLabel) { host=label.layer; motion=8; signature=DateSignature(label); }
+    if (dateLabel) { host=label.layer; motion=MotionBits(label)|8; scale=MaskScale(label.bounds.size); signature=DateSignature(label); }
     else signature=DescribeMask(label,&source,NULL,&host,&native,&motion,&glass,&edges,&scale);
     BOOL attached=s.gradient.superlayer==host;
     BOOL edgesReady=!edges || !s.edgeHost || s.edgeHost.superlayer==host;
@@ -649,8 +659,10 @@ static void Apply(UILabel *label) {
             }
             @try {
                 CALayer *nowSource=nil,*nowOwner=nil; NSUInteger nowMotion=0;
-                BOOL stillDate=dateLabel && [Config[@"dateGradient"] boolValue] && ClockDateText(strong.text ?: strong.attributedText.string);
-                if (stillDate) nowMotion=8;
+                BOOL stillDate=dateLabel && [Config[@"dateGradient"] boolValue] && InLockScreen(strong) &&
+                    !TimeText(strong.text ?: strong.attributedText.string) && ClockDateText(strong.text ?: strong.attributedText.string);
+                if (dateLabel && !stillDate) { RemoveOverlay(strong); return; }
+                if (stillDate) nowMotion=MotionBits(strong)|8;
                 NSString *now=stillDate ? DateSignature(strong) : DescribeMask(strong,&nowSource,&nowOwner,NULL,NULL,&nowMotion,NULL,NULL,NULL);
                 if (![now isEqualToString:signature] || ![Config[@"enabled"] boolValue] || !Visible(strong) || !GradientText(strong.text ?: strong.attributedText.string)) {
                     if ([Config[@"enabled"] boolValue] && Visible(strong) && GradientText(strong.text ?: strong.attributedText.string)) Schedule(strong);
@@ -754,17 +766,23 @@ static void InstallLabelHooks(void) {
 }
 static void Walk(UIView *view,NSUInteger depth) {
     if (!view || depth>64) return;
+    if (InLockScreen(view) && [NSStringFromClass(view.class) containsString:@"Date"]) [DateViews addObject:view];
     if ([view isKindOfClass:UILabel.class]) {
         UILabel *label=(UILabel *)view;
         BOOL glassLabel=GlassClass && [view isKindOfClass:GlassClass];
-        BOOL dateLabel=!glassLabel && ClockDateText(label.text ?: label.attributedText.string);
+        BOOL dateLabel=!glassLabel && InLockScreen(label) && !TimeText(label.text ?: label.attributedText.string) && ClockDateText(label.text ?: label.attributedText.string);
         if (glassLabel || dateLabel) { [Labels addObject:label]; Schedule(label); }
     }
     for (UIView *child in view.subviews) Walk(child,depth+1);
 }
 static void Discover(void) {
     InstallHooks();
-    for (UIWindow *window in UIApplication.sharedApplication.windows) Walk(window,0);
+    // SpringBoard may retain legacy windows outside connectedScenes.
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+    NSArray<UIWindow *> *legacyWindows=UIApplication.sharedApplication.windows;
+#pragma clang diagnostic pop
+    for (UIWindow *window in legacyWindows) Walk(window,0);
     for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
         if (![scene isKindOfClass:UIWindowScene.class]) continue;
         for (UIWindow *window in ((UIWindowScene *)scene).windows) Walk(window,0);
@@ -773,11 +791,20 @@ static void Discover(void) {
 static void WriteDiagnostics(void) {
     Discover();
     NSUInteger clocks=0,scoped=0,active=0; NSMutableArray *details=[NSMutableArray array];
+    NSUInteger dates=0,dateActive=0;
+    NSMutableArray *dateDetails=[NSMutableArray array];
     for (UILabel *label in Labels.allObjects) {
         BOOL time=GradientText(label.text ?: label.attributedText.string); clocks+=time;
         BOOL lock=InLockScreen(label); scoped+=(time && lock);
         LSGCState *s=objc_getAssociatedObject(label,&StateKey);
         active+=(s.gradient.superlayer!=nil);
+        BOOL date=!TimeText(label.text ?: label.attributedText.string) && ClockDateText(label.text ?: label.attributedText.string);
+        if (date) {
+            dates++; dateActive+=(s.gradient.superlayer!=nil);
+            if (dateDetails.count<12) [dateDetails addObject:[NSString stringWithFormat:@"%@ bounds=%@ 可见=%d 锁屏=%d 渐变=%d 浓度=%.2f 模式=%@",
+                NSStringFromClass(label.class),NSStringFromCGRect(label.bounds),Visible(label),lock,
+                s.gradient.superlayer!=nil,s.gradient.opacity,s.maskMode?:@"未渲染"]];
+        }
         if (details.count<6) {
             NSMutableArray *chain=[NSMutableArray array];
             UIView *v=label;
@@ -787,6 +814,25 @@ static void WriteDiagnostics(void) {
     }
     NSString *report=[NSString stringWithFormat:@"兼容层 %@\n类已加载：%@\nHook 已安装：%@\nHook 明细：%@\n玻璃标签：%lu\n时间标签：%lu\n锁屏范围命中：%lu\n已附加渐变：%lu\n开关：%@\n\n%@",
         LSGCVersionString,GlassClass?@"是":@"否",Hooked?@"是":@"否",HookReport?:@"无",(unsigned long)Labels.allObjects.count,(unsigned long)clocks,(unsigned long)scoped,(unsigned long)active,[Config[@"enabled"] boolValue]?@"开":@"关",[details componentsJoinedByString:@"\n\n"]];
+    NSMutableArray *tree=[NSMutableArray array];
+    for (UIView *root in DateViews.allObjects) {
+        NSMutableArray<UIView *> *queue=[NSMutableArray arrayWithObject:root];
+        for (NSUInteger i=0;i<queue.count && tree.count<60;i++) {
+            UIView *view=queue[i];
+            NSMutableArray *layers=[NSMutableArray array];
+            for (CALayer *layer in view.layer.sublayers) {
+                if (layers.count>=8) break;
+                [layers addObject:NSStringFromClass(layer.class)];
+            }
+            [tree addObject:[NSString stringWithFormat:@"%@ -> %@ bounds=%@ 可见=%d layers=%@",
+                NSStringFromClass(view.superview.class),NSStringFromClass(view.class),NSStringFromCGRect(view.bounds),Visible(view),[layers componentsJoinedByString:@","]]];
+            if (queue.count<100) [queue addObjectsFromArray:view.subviews];
+        }
+        if (tree.count>=60) break;
+    }
+    report=[report stringByAppendingFormat:@"\n\n日期开关：%@\nUILabel Hook：%@\n日期标签：%lu\n日期渐变已附加：%lu\n%@\n日期控件树（仅类名与几何）：\n%@",
+        [Config[@"dateGradient"] boolValue]?@"开":@"关",LabelHooked?@"是":@"否",(unsigned long)dates,(unsigned long)dateActive,
+        [dateDetails componentsJoinedByString:@"\n"],[tree componentsJoinedByString:@"\n"]];
     CFPreferencesSetAppValue(CFSTR("diagnosticReport"),(__bridge CFStringRef)report,(__bridge CFStringRef)Domain);
     CFPreferencesAppSynchronize((__bridge CFStringRef)Domain);
     CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),Replied,NULL,NULL,true);
@@ -939,7 +985,7 @@ __attribute__((constructor)) static void Start(void) {
     @autoreleasepool {
         if (![NSBundle.mainBundle.bundleIdentifier isEqualToString:@"com.apple.springboard"]) return;
         dispatch_async(dispatch_get_main_queue(), ^{
-            Labels=[NSHashTable weakObjectsHashTable]; LoadConfig();
+            Labels=[NSHashTable weakObjectsHashTable]; DateViews=[NSHashTable weakObjectsHashTable]; LoadConfig();
             CFNotificationCenterRef center=CFNotificationCenterGetDarwinNotifyCenter();
             CFNotificationCenterAddObserver(center,NULL,Notification,Changed,NULL,CFNotificationSuspensionBehaviorDeliverImmediately);
             CFNotificationCenterAddObserver(center,NULL,Notification,Diagnose,NULL,CFNotificationSuspensionBehaviorDeliverImmediately);
