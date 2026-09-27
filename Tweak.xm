@@ -594,9 +594,9 @@ static void Apply(UILabel *label) {
     BOOL dateLabel=dateCandidate && [Config[@"dateGradient"] boolValue];
     if (dateCandidate && !dateLabel) { RemoveOverlay(label); return; }
     if (!dateLabel && (!GlassClass || ![label isKindOfClass:GlassClass])) return;
-    BOOL scoped=![Config[@"strictScope"] boolValue] || InLockScreen(label);
+    BOOL scoped=dateLabel || ![Config[@"strictScope"] boolValue] || InLockScreen(label);
     if (![Config[@"enabled"] boolValue] || !Visible(label) || !GradientText(label.text ?: label.attributedText.string) ||
-        !scoped || (dateLabel && !InLockScreen(label)) || label.bounds.size.width<1 || label.bounds.size.height<1 ||
+        !scoped || label.bounds.size.width<1 || label.bounds.size.height<1 ||
         label.bounds.size.width>2048 || label.bounds.size.height>2048) { RemoveOverlay(label); return; }
     LSGCState *s=objc_getAssociatedObject(label,&StateKey);
     if (!s) {
@@ -724,7 +724,7 @@ static void Walk(UIView *view,NSUInteger depth) {
     if ([view isKindOfClass:UILabel.class]) {
         UILabel *label=(UILabel *)view;
         BOOL glassLabel=GlassClass && [view isKindOfClass:GlassClass];
-        BOOL dateLabel=!glassLabel && ClockDateText(label.text ?: label.attributedText.string) && InLockScreen(label);
+        BOOL dateLabel=!glassLabel && ClockDateText(label.text ?: label.attributedText.string);
         if (glassLabel || dateLabel) { [Labels addObject:label]; Schedule(label); }
     }
     for (UIView *child in view.subviews) Walk(child,depth+1);
