@@ -581,12 +581,22 @@ static void RemoveOverlay(UILabel *label) {
     ClearEdges(s);
     s.signature=nil; s.revision=0;
 }
+static NSString *DateSignature(UILabel *label) {
+    return [NSString stringWithFormat:@"date|%@|%@|%@|%.2f|%.2f|%ld",
+        label.text ?: label.attributedText.string ?: @"",label.font.description ?: @"",
+        NSStringFromCGSize(label.bounds.size),label.bounds.origin.x,label.bounds.origin.y,(long)label.numberOfLines];
+}
 static void Apply(UILabel *label) {
-    if (!NSThread.isMainThread || !GlassClass || ![label isKindOfClass:GlassClass]) return;
+    if (!NSThread.isMainThread) return;
     [Labels addObject:label];
+    BOOL isGlassLabel=GlassClass && [label isKindOfClass:GlassClass];
+    BOOL dateCandidate=!isGlassLabel && ClockDateText(label.text ?: label.attributedText.string);
+    BOOL dateLabel=dateCandidate && [Config[@"dateGradient"] boolValue];
+    if (dateCandidate && !dateLabel) { RemoveOverlay(label); return; }
+    if (!dateLabel && (!GlassClass || ![label isKindOfClass:GlassClass])) return;
     BOOL scoped=![Config[@"strictScope"] boolValue] || InLockScreen(label);
     if (![Config[@"enabled"] boolValue] || !Visible(label) || !GradientText(label.text ?: label.attributedText.string) ||
-        !scoped || label.bounds.size.width<1 || label.bounds.size.height<1 ||
+        !scoped || (dateLabel && !InLockScreen(label)) || label.bounds.size.width<1 || label.bounds.size.height<1 ||
         label.bounds.size.width>2048 || label.bounds.size.height>2048) { RemoveOverlay(label); return; }
     LSGCState *s=objc_getAssociatedObject(label,&StateKey);
     if (!s) {
@@ -598,7 +608,9 @@ static void Apply(UILabel *label) {
     if (s.busy) { if (!Rendering) s.dirty=YES; return; }
     CALayer *source=nil,*host=nil;
     BOOL native=NO,glass=NO,edges=NO; NSUInteger motion=0; CGFloat scale=1;
-    NSString *signature=DescribeMask(label,&source,NULL,&host,&native,&motion,&glass,&edges,&scale);
+    NSString *signature;
+    if (dateLabel) { host=label.layer; motion=8; signature=DateSignature(label); }
+    else signature=DescribeMask(label,&source,NULL,&host,&native,&motion,&glass,&edges,&scale);
     BOOL attached=s.gradient.superlayer==host;
     BOOL edgesReady=!edges || !s.edgeHost || s.edgeHost.superlayer==host;
     UpdateParallax();
@@ -635,7 +647,9 @@ static void Apply(UILabel *label) {
             }
             @try {
                 CALayer *nowSource=nil,*nowOwner=nil; NSUInteger nowMotion=0;
-                NSString *now=DescribeMask(strong,&nowSource,&nowOwner,NULL,NULL,&nowMotion,NULL,NULL,NULL);
+                BOOL stillDate=dateLabel && [Config[@"dateGradient"] boolValue] && ClockDateText(strong.text ?: strong.attributedText.string);
+                if (stillDate) nowMotion=8;
+                NSString *now=stillDate ? DateSignature(strong) : DescribeMask(strong,&nowSource,&nowOwner,NULL,NULL,&nowMotion,NULL,NULL,NULL);
                 if (![now isEqualToString:signature] || ![Config[@"enabled"] boolValue] || !Visible(strong) || !GradientText(strong.text ?: strong.attributedText.string)) {
                     if ([Config[@"enabled"] boolValue] && Visible(strong) && GradientText(strong.text ?: strong.attributedText.string)) Schedule(strong);
                     else RemoveOverlay(strong);
@@ -707,7 +721,12 @@ static void InstallHooks(void) {
 }
 static void Walk(UIView *view,NSUInteger depth) {
     if (!view || depth>64) return;
-    if (GlassClass && [view isKindOfClass:GlassClass]) { [Labels addObject:(UILabel *)view]; Schedule((UILabel *)view); }
+    if ([view isKindOfClass:UILabel.class]) {
+        UILabel *label=(UILabel *)view;
+        BOOL glassLabel=GlassClass && [view isKindOfClass:GlassClass];
+        BOOL dateLabel=!glassLabel && ClockDateText(label.text ?: label.attributedText.string) && InLockScreen(label);
+        if (glassLabel || dateLabel) { [Labels addObject:label]; Schedule(label); }
+    }
     for (UIView *child in view.subviews) Walk(child,depth+1);
 }
 static void Discover(void) {
