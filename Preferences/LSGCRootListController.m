@@ -4,6 +4,7 @@
 #import <CoreFoundation/CoreFoundation.h>
 #import <math.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
+#import "../LSGCVersion.h"
 
 #import <Preferences/PSTableCell.h>
 
@@ -126,6 +127,7 @@ static CFStringRef const Replied=CFSTR("com.minis.lockscreengradientclock/diagno
 @property(nonatomic,copy) NSString *colorKey;
 @property(nonatomic) BOOL waiting;
 @property(nonatomic) BOOL editCheckpointMade;
+@property(nonatomic) NSUInteger colorSaveToken;
 - (NSDictionary *)visualSchema;
 - (void)checkpoint;
 - (void)receivedReport;
@@ -218,9 +220,19 @@ static void Reply(CFNotificationCenterRef center, void *observer, CFStringRef na
     }
 }
 - (void)colorPickerViewController:(UIColorPickerViewController *)controller didSelectColor:(UIColor *)color continuously:(BOOL)continuously {
-    (void)color; (void)continuously; [self savePickerColor:controller];
+    (void)color;
+    if (!continuously) { self.colorSaveToken++; [self savePickerColor:controller]; return; }
+    NSUInteger token=++self.colorSaveToken;
+    __weak LSGCRootListController *weak=self;
+    __weak UIColorPickerViewController *weakPicker=controller;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(0.12*NSEC_PER_SEC)),dispatch_get_main_queue(), ^{
+        LSGCRootListController *strong=weak; UIColorPickerViewController *picker=weakPicker;
+        if (!strong || !picker || strong.colorSaveToken!=token) return;
+        [strong savePickerColor:picker];
+    });
 }
 - (void)colorPickerViewControllerDidFinish:(UIColorPickerViewController *)controller {
+    self.colorSaveToken++;
     [self savePickerColor:controller];
 }
 - (void)showMessage:(NSString *)message {
@@ -457,7 +469,7 @@ static void Reply(CFNotificationCenterRef center, void *observer, CFStringRef na
         LSGCRootListController *strong=weak;
         if (strong.waiting) {
             strong.waiting=NO;
-            [strong showMessage:@"SpringBoard 未响应。请确认安装的是 1.5.1，已注销，且允许本插件注入 SpringBoard。此提示不是已成功适配的证明。"];
+            [strong showMessage:[NSString stringWithFormat:@"SpringBoard 未响应。请确认安装的是 %@，已注销，且允许本插件注入 SpringBoard。此提示不是已成功适配的证明。",LSGCVersionString]];
         }
     });
 }

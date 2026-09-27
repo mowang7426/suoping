@@ -49,6 +49,14 @@ jobs:
           echo "THEOS=$THEOS"
           xcrun --version
 
+      - name: Run math tests
+        run: |
+          set -e
+          c++ -std=c++17 -Wall -Wextra -Werror tests/gradient_math_test.cpp -o /tmp/gradient_math_test
+          /tmp/gradient_math_test
+          c++ -std=c++17 -Wall -Wextra -Werror tests/edge_math_test.cpp -o /tmp/edge_math_test
+          /tmp/edge_math_test
+
       - name: Verify package metadata
         run: |
           set -e
@@ -85,6 +93,7 @@ jobs:
             dpkg-deb --contents "$deb" | grep -E \
               'LockScreenGradientClock|PreferenceBundles|PreferenceLoader' || true
           done
+          python3 scripts/verify_packages.py build/*.deb
 
       - name: Upload DEB packages
         uses: actions/upload-artifact@v4

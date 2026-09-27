@@ -7,6 +7,7 @@
 #import <math.h>
 #import "LSGCEdgeMath.h"
 #import "LSGCGradientMath.h"
+#import "LSGCVersion.h"
 
 // An optional companion: never patch, replace or distribute Liquidify binaries.
 extern "C" void MSHookMessageEx(Class, SEL, IMP, IMP *);
@@ -18,7 +19,9 @@ static NSDictionary *Config;
 static NSHashTable<UILabel *> *Labels;
 static Class GlassClass;
 static BOOL Hooked;
+static NSString *HookReport;
 static char StateKey, PendingKey;
+static BOOL Rendering;
 static NSUInteger Revision;
 static void Apply(UILabel *label);
 static void InstallHooks(void);
@@ -34,7 +37,10 @@ static void Discover(void);
 @property(nonatomic,copy) NSString *signature;
 @property(nonatomic,copy) NSString *maskMode;
 @property(nonatomic) BOOL busy;
+@property(nonatomic) BOOL dirty;
 @property(nonatomic) NSUInteger revision;
+@property(nonatomic) NSUInteger ticket;
+@property(nonatomic) NSUInteger motionBits;
 @end
 @implementation LSGCState
 @end
@@ -138,11 +144,19 @@ static BOOL HasAlpha(UIImage *image) {
     for (NSUInteger i=3;i<sizeof(rgba);i+=4) if (rgba[i]>8) return YES;
     return NO;
 }
-static UIImage *SnapshotMask(CALayer *source) {
+static CGFloat MaskScale(CGSize size) {
+    CGFloat screen=UIScreen.mainScreen.scale;
+    if (screen<1) screen=1;
+    CGFloat area=size.width*size.height;
+    if (!(area>0)) return MIN(screen,3);
+    CGFloat fit=sqrt((1024.0*1024.0)/area);
+    return MAX(1,MIN(screen,fit));
+}
+static UIImage *SnapshotMask(CALayer *source,CGFloat scale) {
     CGSize size=source.bounds.size;
     if (!HasInk(source,0) || size.width<1 || size.height<1 || size.width>2048 || size.height>2048) return nil;
     UIGraphicsImageRendererFormat *format=[UIGraphicsImageRendererFormat preferredFormat];
-    format.opaque=NO; format.scale=MIN(UIScreen.mainScreen.scale,2.0);
+    format.opaque=NO; format.scale=MAX(1,scale);
     UIGraphicsImageRenderer *renderer=[[UIGraphicsImageRenderer alloc] initWithSize:size format:format];
     UIImage *image=[renderer imageWithActions:^(UIGraphicsImageRendererContext *context) {
         CGContextTranslateCTM(context.CGContext,-source.bounds.origin.x,-source.bounds.origin.y);
@@ -150,7 +164,7 @@ static UIImage *SnapshotMask(CALayer *source) {
     }];
     return HasAlpha(image) ? image : nil;
 }
-static UIImage *SnapshotText(UILabel *label) {
+static UIImage *SnapshotText(UILabel *label,CGFloat scale) {
     UILabel *mirror=[[UILabel alloc] initWithFrame:(CGRect){CGPointZero,label.bounds.size}];
     mirror.font=label.font; mirror.textColor=UIColor.whiteColor;
     mirror.textAlignment=label.textAlignment; mirror.numberOfLines=label.numberOfLines;
@@ -167,7 +181,7 @@ static UIImage *SnapshotText(UILabel *label) {
         mirror.attributedText=text;
     } else mirror.text=label.text;
     UIGraphicsImageRendererFormat *format=[UIGraphicsImageRendererFormat preferredFormat];
-    format.opaque=NO; format.scale=MIN(UIScreen.mainScreen.scale,2.0);
+    format.opaque=NO; format.scale=MAX(1,scale);
     UIGraphicsImageRenderer *renderer=[[UIGraphicsImageRenderer alloc] initWithSize:mirror.bounds.size format:format];
     [mirror setNeedsLayout]; [mirror layoutIfNeeded];
     [mirror.layer setNeedsDisplay]; [mirror.layer displayIfNeeded];
@@ -233,16 +247,17 @@ static void ClearEdges(LSGCState *s) {
     [s.edgeBevel removeAllAnimations];
     s.edgeHost=nil; s.edgeTint=nil; s.edgeMask=nil; s.edgeBevel=nil;
 }
-static BOOL PrepareEdges(LSGCState *s,UIImage *image) {
-    if (![Config[@"edgeEnabled"] boolValue]) { ClearEdges(s); return NO; }
+static BOOL BuildEdgeImages(UIImage *image,CGFloat edgeWidth,CGImageRef *ringOut,CGImageRef *bevelOut) {
+    if (ringOut) *ringOut=NULL;
+    if (bevelOut) *bevelOut=NULL;
     CGImageRef input=image.CGImage;
     size_t w=input ? CGImageGetWidth(input) : 0,h=input ? CGImageGetHeight(input) : 0;
-    if (!w || !h || w>4096 || h>4096 || w*h>4194304) { ClearEdges(s); return NO; }
+    if (!w || !h || w>4096 || h>4096 || w*h>4194304) return NO;
     size_t count=w*h*4;
     unsigned char *rgba=(unsigned char *)calloc(count,1);
     unsigned char *ring=(unsigned char *)calloc(count,1);
     unsigned char *bevel=(unsigned char *)calloc(count,1);
-    if (!rgba || !ring || !bevel) { free(rgba); free(ring); free(bevel); ClearEdges(s); return NO; }
+    if (!rgba || !ring || !bevel) { free(rgba); free(ring); free(bevel); return NO; }
     CGColorSpaceRef space=CGColorSpaceCreateDeviceRGB();
     CGBitmapInfo flags=kCGImageAlphaPremultipliedLast|kCGBitmapByteOrder32Big;
     CGContextRef source=CGBitmapContextCreate(rgba,w,h,8,w*4,space,flags);
@@ -252,10 +267,8 @@ static BOOL PrepareEdges(LSGCState *s,UIImage *image) {
     BOOL valid=source && ringContext && bevelContext;
     CGImageRef ringImage=NULL,bevelImage=NULL;
     if (valid) {
-        // CGImage raster output preserves the source orientation. UIKit display maps
-        // the first bitmap row to the top; the pure algorithm uses that same order.
         CGContextDrawImage(source,CGRectMake(0,0,w,h),input);
-        float radius=(float)(Clamp([Config[@"edgeWidth"] doubleValue],0.5,4)*image.scale);
+        float radius=(float)(Clamp(edgeWidth,0.5,4)*image.scale);
         valid=LSGCMakeEdges(rgba,w,h,radius,ring,bevel);
         if (valid) {
             ringImage=CGBitmapContextCreateImage(ringContext);
@@ -263,25 +276,30 @@ static BOOL PrepareEdges(LSGCState *s,UIImage *image) {
             valid=ringImage && bevelImage;
         }
     }
-    if (valid) {
-        if (!s.edgeHost) {
-            s.edgeHost=[CALayer layer]; s.edgeHost.name=@"LSGC.OptionalColorEdges";
-            s.edgeTint=[CAGradientLayer layer]; s.edgeMask=[CALayer layer]; s.edgeBevel=[CALayer layer];
-            s.edgeTint.mask=s.edgeMask;
-            [s.edgeHost addSublayer:s.edgeTint]; [s.edgeHost addSublayer:s.edgeBevel];
-        }
-        s.edgeMask.contents=(__bridge id)ringImage;
-        s.edgeMask.contentsScale=image.scale; s.edgeMask.contentsGravity=kCAGravityResize;
-        s.edgeBevel.contents=(__bridge id)bevelImage;
-        s.edgeBevel.contentsScale=image.scale; s.edgeBevel.contentsGravity=kCAGravityResize;
-    } else ClearEdges(s);
-    if (ringImage) CGImageRelease(ringImage);
-    if (bevelImage) CGImageRelease(bevelImage);
     if (source) CGContextRelease(source);
     if (ringContext) CGContextRelease(ringContext);
     if (bevelContext) CGContextRelease(bevelContext);
     free(rgba); free(ring); free(bevel);
-    return valid;
+    if (!valid) {
+        if (ringImage) CGImageRelease(ringImage);
+        if (bevelImage) CGImageRelease(bevelImage);
+        return NO;
+    }
+    *ringOut=ringImage; *bevelOut=bevelImage;
+    return YES;
+}
+static void InstallEdgeContents(LSGCState *s,CGImageRef ringImage,CGImageRef bevelImage,CGFloat scale) {
+    if (!ringImage || !bevelImage) { ClearEdges(s); return; }
+    if (!s.edgeHost) {
+        s.edgeHost=[CALayer layer]; s.edgeHost.name=@"LSGC.OptionalColorEdges";
+        s.edgeTint=[CAGradientLayer layer]; s.edgeMask=[CALayer layer]; s.edgeBevel=[CALayer layer];
+        s.edgeTint.mask=s.edgeMask;
+        [s.edgeHost addSublayer:s.edgeTint]; [s.edgeHost addSublayer:s.edgeBevel];
+    }
+    s.edgeMask.contents=(__bridge id)ringImage;
+    s.edgeMask.contentsScale=scale; s.edgeMask.contentsGravity=kCAGravityResize;
+    s.edgeBevel.contents=(__bridge id)bevelImage;
+    s.edgeBevel.contentsScale=scale; s.edgeBevel.contentsGravity=kCAGravityResize;
 }
 static void MatchGeometry(CALayer *layer,CALayer *reference) {
     layer.transform=CATransform3DIdentity;
@@ -326,8 +344,7 @@ static void ApplyEdges(LSGCState *s,CALayer *host) {
     if (s.edgeHost.superlayer!=host) {
         [s.edgeHost removeFromSuperlayer]; [host addSublayer:s.edgeHost];
     }
-    if (appearing && [Config[@"edgeReveal"] boolValue] && !UIAccessibilityIsReduceMotionEnabled() &&
-        !NSProcessInfo.processInfo.lowPowerModeEnabled && intensity>0) {
+    if (appearing && [Config[@"edgeReveal"] boolValue] && (s.motionBits&7)==0 && intensity>0) {
         CAKeyframeAnimation *flash=[CAKeyframeAnimation animationWithKeyPath:@"opacity"];
         flash.values=@[@0,@(MIN(1,intensity*1.5)),@(intensity)];
         flash.keyTimes=@[@0,@0.25,@1]; flash.duration=0.9;
@@ -335,8 +352,146 @@ static void ApplyEdges(LSGCState *s,CALayer *host) {
     }
 }
 
+static CGFloat Quantize(CGFloat value,CGFloat scale) {
+    if (!(scale>0) || !isfinite(value)) return 0;
+    return round(value*scale)/scale;
+}
+static NSString *QuantizedRect(CGRect rect,CGFloat scale) {
+    return [NSString stringWithFormat:@"%.3f,%.3f,%.3f,%.3f",Quantize(rect.origin.x,scale),Quantize(rect.origin.y,scale),Quantize(rect.size.width,scale),Quantize(rect.size.height,scale)];
+}
+static BOOL AlwaysOn(UIView *view) {
+    for (UIView *v=view; v; v=v.superview) {
+        if ([NSStringFromClass(v.class) containsString:@"AlwaysOn"]) return YES;
+        for (UIResponder *r=v; r; r=r.nextResponder) {
+            if ([NSStringFromClass(r.class) containsString:@"AlwaysOn"]) return YES;
+            if ([r isKindOfClass:UIWindow.class]) break;
+        }
+    }
+    return NO;
+}
+static NSUInteger MotionBits(UIView *view) {
+    NSUInteger bits=0;
+    if (UIAccessibilityIsReduceMotionEnabled()) bits|=1;
+    if (NSProcessInfo.processInfo.lowPowerModeEnabled) bits|=2;
+    if (AlwaysOn(view)) bits|=4;
+    if (UIAccessibilityIsReduceTransparencyEnabled()) bits|=8;
+    return bits;
+}
+static NSString *SeparatorCodes(NSString *text) {
+    if (!text.length) return @"无";
+    NSMutableArray *codes=[NSMutableArray array];
+    NSCharacterSet *digits=NSCharacterSet.decimalDigitCharacterSet;
+    NSUInteger limit=MIN(text.length,(NSUInteger)24);
+    [text enumerateSubstringsInRange:NSMakeRange(0,limit) options:NSStringEnumerationByComposedCharacterSequences usingBlock:^(NSString *sub,NSRange substringRange,NSRange enclosingRange,BOOL *stop) {
+        (void)substringRange; (void)enclosingRange;
+        if (!sub.length) return;
+        unichar c=[sub characterAtIndex:0];
+        if ([digits characterIsMember:c] || [[NSCharacterSet whitespaceAndNewlineCharacterSet] characterIsMember:c]) return;
+        NSString *code=[NSString stringWithFormat:@"U+%04X",(unsigned)c];
+        if (![codes containsObject:code] && codes.count<6) [codes addObject:code];
+        if (codes.count>=6) *stop=YES;
+    }];
+    return codes.count ? [codes componentsJoinedByString:@","] : @"无";
+}
+static NSString *DescribeMask(UILabel *label,CALayer **sourceOut,CALayer **ownerOut,CALayer **hostOut,BOOL *nativeOut,NSUInteger *motionOut,BOOL *glassOut,BOOL *edgesOut,CGFloat *scaleOut) {
+    CALayer *source=ReadObject(label,@"textMaskLayer");
+    if (![source isKindOfClass:CALayer.class]) source=nil;
+    CALayer *owner=source ? MaskOwner(label.layer,source,0) : nil;
+    BOOL native=owner && [Config[@"maskMode"] integerValue]!=1;
+    NSUInteger motion=MotionBits(label);
+    BOOL glass=[Config[@"glassBlend"] boolValue] && (motion&8)==0;
+    BOOL edges=[Config[@"edgeEnabled"] boolValue];
+    CGFloat scale=MaskScale(label.bounds.size);
+    LSGCState *state=objc_getAssociatedObject(label,&StateKey);
+    CALayer *host=native ? owner : label.layer;
+    if ([state.maskMode isEqualToString:@"同字体文字重绘"]) host=label.layer;
+    if (sourceOut) *sourceOut=source;
+    if (ownerOut) *ownerOut=owner;
+    if (hostOut) *hostOut=host;
+    if (nativeOut) *nativeOut=native;
+    if (motionOut) *motionOut=motion;
+    if (glassOut) *glassOut=glass;
+    if (edgesOut) *edgesOut=edges;
+    if (scaleOut) *scaleOut=scale;
+    return [NSString stringWithFormat:@"%@|%@|%@|%p|%p|%@|%@|%@|%p|%@|%d|%d|%.3f|%.3f|%d|%d",
+        label.attributedText ?: (id)label.text,QuantizedRect(label.bounds,scale),label.font,source,(__bridge void *)source.contents,
+        QuantizedRect(source ? source.frame : CGRectZero,scale),QuantizedRect(source ? source.bounds : CGRectZero,scale),
+        source ? [NSValue valueWithCATransform3D:source.transform] : @"none",owner,QuantizedRect(owner ? owner.bounds : label.bounds,scale),
+        ReadFlag(label,@"cachedBuildFinished"),native,scale,Clamp([Config[@"edgeWidth"] doubleValue],0.5,4),glass,edges];
+}
+static void ApplyStyle(UILabel *label,LSGCState *s,CALayer *host,NSUInteger motionBits) {
+    BOOL styleDirty=s.revision!=Revision || s.motionBits!=motionBits;
+    BOOL glass=[Config[@"glassBlend"] boolValue] && (motionBits&8)==0;
+    s.motionBits=motionBits;
+    [CATransaction begin]; [CATransaction setDisableActions:YES];
+    s.gradient.bounds=(CGRect){CGPointZero,host.bounds.size};
+    s.gradient.position=CGPointMake(CGRectGetMidX(host.bounds),CGRectGetMidY(host.bounds));
+    s.gradient.opacity=glass ? Clamp([Config[@"glassTint"] doubleValue],0,0.65) : Clamp([Config[@"opacity"] doubleValue],0,1);
+    if ([Config[@"edgeEnabled"] boolValue] && s.edgeHost)
+        s.gradient.opacity *= Clamp([Config[@"edgeCore"] doubleValue],0,1);
+    if (motionBits&4) s.gradient.opacity*=0.4;
+    NSInteger direction=[Config[@"direction"] integerValue];
+    s.gradient.startPoint=direction==1 ? CGPointMake(.5,0) : CGPointMake(0,.5);
+    s.gradient.endPoint=direction==1 ? CGPointMake(.5,1) : CGPointMake(1,.5);
+    if (direction==2) { s.gradient.startPoint=CGPointMake(0,0); s.gradient.endPoint=CGPointMake(1,1); }
+    if ([Config[@"customAngleEnabled"] boolValue]) {
+        double endpoints[4];
+        LSGCGradientEndpoints([Config[@"gradientAngle"] doubleValue],host.bounds.size.width,host.bounds.size.height,endpoints);
+        s.gradient.startPoint=CGPointMake(endpoints[0],endpoints[1]);
+        s.gradient.endPoint=CGPointMake(endpoints[2],endpoints[3]);
+    }
+    if (styleDirty) {
+        NSArray *defaults=@[@"#39D6ED",@"#4D7CFF",@"#AD4DF5",@"#F950B0",@"#FFBD61"];
+        NSMutableArray *colors=[NSMutableArray array];
+        for (NSUInteger i=0;i<5;i++) {
+            NSString *key=[NSString stringWithFormat:@"color%lu",(unsigned long)i+1];
+            UIColor *c=Color(Config[key],Color(defaults[i],UIColor.whiteColor));
+            [colors addObject:(__bridge id)c.CGColor];
+        }
+        if ([Config[@"reverseColors"] boolValue]) colors=[[[colors reverseObjectEnumerator] allObjects] mutableCopy];
+        s.gradient.colors=colors; s.gradient.locations=@[@0,@0.25,@0.5,@0.75,@1];
+        if ([Config[@"customStopsEnabled"] boolValue]) {
+            double input[5],output[5];
+            for (NSUInteger i=0;i<5;i++) input[i]=[Config[[NSString stringWithFormat:@"stop%lu",(unsigned long)i+1]] doubleValue];
+            LSGCOrderedStops(input,output);
+            NSMutableArray *locations=[NSMutableArray array];
+            for (NSUInteger i=0;i<5;i++) [locations addObject:@(output[i])];
+            s.gradient.locations=locations;
+        }
+        [s.gradient removeAllAnimations];
+        if ([Config[@"animate"] boolValue] && (motionBits&7)==0) {
+            NSMutableArray *reverse=[NSMutableArray arrayWithArray:[[colors reverseObjectEnumerator] allObjects]];
+            CABasicAnimation *a=[CABasicAnimation animationWithKeyPath:@"colors"];
+            a.fromValue=colors; a.toValue=reverse; a.duration=6; a.autoreverses=YES; a.repeatCount=HUGE_VALF;
+            [s.gradient addAnimation:a forKey:@"LSGC.colors"];
+        }
+        s.revision=Revision;
+    }
+    PlaceTint(host,s.gradient,label,glass);
+    ApplyEdges(s,host);
+    [CATransaction commit];
+}
+static void InstallMask(LSGCState *s,UIImage *image,BOOL native,CALayer *source,CALayer *host,UILabel *label) {
+    [CATransaction begin]; [CATransaction setDisableActions:YES];
+    s.mask.contents=(__bridge id)image.CGImage;
+    s.mask.contentsScale=image.scale;
+    s.mask.contentsGravity=kCAGravityResize;
+    s.mask.transform=CATransform3DIdentity;
+    if (native && source) {
+        s.mask.bounds=source.bounds; s.mask.anchorPoint=source.anchorPoint;
+        s.mask.position=CGPointMake(source.position.x-host.bounds.origin.x,source.position.y-host.bounds.origin.y); s.mask.transform=source.transform;
+    } else {
+        s.mask.anchorPoint=CGPointMake(.5,.5);
+        s.mask.bounds=(CGRect){CGPointZero,label.bounds.size};
+        s.mask.position=CGPointMake(label.bounds.size.width*.5,label.bounds.size.height*.5);
+    }
+    s.maskMode=native ? @"原插件文字遮罩" : @"同字体文字重绘";
+    [CATransaction commit];
+}
 static void RemoveOverlay(UILabel *label) {
     LSGCState *s=objc_getAssociatedObject(label,&StateKey);
+    if (!s) return;
+    s.ticket++; s.busy=NO; s.dirty=NO;
     [s.gradient removeFromSuperlayer]; [s.gradient removeAllAnimations];
     ClearEdges(s);
     s.signature=nil; s.revision=0;
@@ -355,89 +510,68 @@ static void Apply(UILabel *label) {
         s.gradient.mask=s.mask;
         objc_setAssociatedObject(label,&StateKey,s,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
-    if (s.busy) return; s.busy=YES;
+    if (s.busy) { if (!Rendering) s.dirty=YES; return; }
+    CALayer *source=nil,*host=nil;
+    BOOL native=NO,glass=NO,edges=NO; NSUInteger motion=0; CGFloat scale=1;
+    NSString *signature=DescribeMask(label,&source,NULL,&host,&native,&motion,&glass,&edges,&scale);
+    BOOL attached=s.gradient.superlayer==host;
+    BOOL edgesReady=!edges || !s.edgeHost || s.edgeHost.superlayer==host;
+    if ([s.signature isEqualToString:signature] && s.revision==Revision && s.motionBits==motion && attached && edgesReady) return;
+    if ([s.signature isEqualToString:signature]) { ApplyStyle(label,s,host,motion); return; }
+    s.busy=YES;
+    UIImage *image=nil; BOOL usedNative=NO;
     @try {
-        CALayer *source=ReadObject(label,@"textMaskLayer");
-        if (![source isKindOfClass:CALayer.class]) source=nil;
-        CALayer *owner=source ? MaskOwner(label.layer,source,0) : nil;
-        BOOL native=owner && [Config[@"maskMode"] integerValue]!=1;
-        NSString *signature=[NSString stringWithFormat:@"%@|%@|%@|%p|%p|%@|%d|%d|%lu",
-            label.attributedText ?: (id)label.text,NSStringFromCGRect(label.bounds),label.font,
-            source,(__bridge void *)source.contents,[NSString stringWithFormat:@"%@|%@|%@|%p|%@",NSStringFromCGRect(source ? source.frame : CGRectZero),NSStringFromCGRect(source ? source.bounds : CGRectZero),source ? [NSValue valueWithCATransform3D:source.transform] : @"none",owner,NSStringFromCGRect(owner ? owner.bounds : label.bounds)],
-            ReadFlag(label,@"cachedBuildFinished"),native,(unsigned long)Revision];
-        CALayer *host=native ? owner : label.layer;
-        if (![s.signature isEqualToString:signature]) {
-            UIImage *image=native ? SnapshotMask(source) : nil;
-            if (!image) { native=NO; host=label.layer; image=SnapshotText(label); }
-            if (!image) { RemoveOverlay(label); s.maskMode=@"遮罩为空"; return; }
-            PrepareEdges(s,image);
-            if ([Config[@"glassBlend"] boolValue]) image=GlassTintMask(image);
-            [CATransaction begin]; [CATransaction setDisableActions:YES];
-            s.mask.contents=(__bridge id)image.CGImage;
-            s.mask.contentsScale=image.scale;
-            s.mask.contentsGravity=kCAGravityResize;
-            s.mask.transform=CATransform3DIdentity;
-            if (native) {
-                s.mask.bounds=source.bounds; s.mask.anchorPoint=source.anchorPoint;
-                s.mask.position=CGPointMake(source.position.x-host.bounds.origin.x,source.position.y-host.bounds.origin.y); s.mask.transform=source.transform;
-            } else {
-                s.mask.anchorPoint=CGPointMake(.5,.5);
-                s.mask.bounds=(CGRect){CGPointZero,label.bounds.size};
-                s.mask.position=CGPointMake(label.bounds.size.width*.5,label.bounds.size.height*.5);
-            }
-            s.maskMode=native ? @"原插件文字遮罩" : @"同字体文字重绘";
-            [CATransaction commit]; s.signature=signature;
-        } else if ([s.maskMode isEqualToString:@"同字体文字重绘"]) host=label.layer;
-        [CATransaction begin]; [CATransaction setDisableActions:YES];
-        s.gradient.bounds=(CGRect){CGPointZero,host.bounds.size};
-        s.gradient.position=CGPointMake(CGRectGetMidX(host.bounds),CGRectGetMidY(host.bounds));
-        BOOL glass=[Config[@"glassBlend"] boolValue];
-        s.gradient.opacity=glass ? Clamp([Config[@"glassTint"] doubleValue],0,0.65) : Clamp([Config[@"opacity"] doubleValue],0,1);
-        if ([Config[@"edgeEnabled"] boolValue] && s.edgeHost)
-            s.gradient.opacity *= Clamp([Config[@"edgeCore"] doubleValue],0,1);
-        NSInteger direction=[Config[@"direction"] integerValue];
-        s.gradient.startPoint=direction==1 ? CGPointMake(.5,0) : CGPointMake(0,.5);
-        s.gradient.endPoint=direction==1 ? CGPointMake(.5,1) : CGPointMake(1,.5);
-        if (direction==2) { s.gradient.startPoint=CGPointMake(0,0); s.gradient.endPoint=CGPointMake(1,1); }
-        if ([Config[@"customAngleEnabled"] boolValue]) {
-            double endpoints[4];
-            LSGCGradientEndpoints([Config[@"gradientAngle"] doubleValue],host.bounds.size.width,host.bounds.size.height,endpoints);
-            s.gradient.startPoint=CGPointMake(endpoints[0],endpoints[1]);
-            s.gradient.endPoint=CGPointMake(endpoints[2],endpoints[3]);
-        }
-        if (s.revision!=Revision) {
-            NSArray *defaults=@[@"#39D6ED",@"#4D7CFF",@"#AD4DF5",@"#F950B0",@"#FFBD61"];
-            NSMutableArray *colors=[NSMutableArray array];
-            for (NSUInteger i=0;i<5;i++) {
-                NSString *key=[NSString stringWithFormat:@"color%lu",(unsigned long)i+1];
-                UIColor *c=Color(Config[key],Color(defaults[i],UIColor.whiteColor));
-                [colors addObject:(__bridge id)c.CGColor];
-            }
-            if ([Config[@"reverseColors"] boolValue]) colors=[[[colors reverseObjectEnumerator] allObjects] mutableCopy];
-            s.gradient.colors=colors; s.gradient.locations=@[@0,@0.25,@0.5,@0.75,@1];
-            if ([Config[@"customStopsEnabled"] boolValue]) {
-                double input[5],output[5];
-                for (NSUInteger i=0;i<5;i++) input[i]=[Config[[NSString stringWithFormat:@"stop%lu",(unsigned long)i+1]] doubleValue];
-                LSGCOrderedStops(input,output);
-                NSMutableArray *locations=[NSMutableArray array];
-                for (NSUInteger i=0;i<5;i++) [locations addObject:@(output[i])];
-                s.gradient.locations=locations;
-            }
-            [s.gradient removeAllAnimations];
-            if ([Config[@"animate"] boolValue]) {
-                NSMutableArray *reverse=[NSMutableArray arrayWithArray:[[colors reverseObjectEnumerator] allObjects]];
-                CABasicAnimation *a=[CABasicAnimation animationWithKeyPath:@"colors"];
-                a.fromValue=colors; a.toValue=reverse; a.duration=6; a.autoreverses=YES; a.repeatCount=HUGE_VALF;
-                [s.gradient addAnimation:a forKey:@"LSGC.colors"];
-            }
-            s.revision=Revision;
-        }
-        PlaceTint(host,s.gradient,label,glass);
-        ApplyEdges(s,host);
-        [CATransaction commit];
+        Rendering=YES;
+        image=native ? SnapshotMask(source,scale) : nil;
+        usedNative=image!=nil;
+        if (!image) { image=SnapshotText(label,scale); usedNative=NO; }
+        Rendering=NO;
     } @catch (NSException *exception) {
-        RemoveOverlay(label); s.maskMode=[@"兼容异常：" stringByAppendingString:exception.name];
-    } @finally { s.busy=NO; }
+        Rendering=NO; RemoveOverlay(label);
+        s.maskMode=[@"兼容异常：" stringByAppendingString:exception.name];
+        s.busy=NO; return;
+    }
+    if (!image) { RemoveOverlay(label); s.maskMode=@"遮罩为空"; s.busy=NO; return; }
+    NSUInteger ticket=++s.ticket;
+    CGFloat edgeWidth=Clamp([Config[@"edgeWidth"] doubleValue],0.5,4);
+    BOOL wantEdges=edges,wantGlass=glass;
+    __weak UILabel *weak=label; LSGCState *state=s;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0), ^{
+        CGImageRef ring=NULL,bevel=NULL;
+        BOOL edgeOK=wantEdges && BuildEdgeImages(image,edgeWidth,&ring,&bevel);
+        UIImage *tinted=wantGlass ? GlassTintMask(image) : image;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            UILabel *strong=weak;
+            if (!strong || state.ticket!=ticket) {
+                if (ring) CGImageRelease(ring);
+                if (bevel) CGImageRelease(bevel);
+                return;
+            }
+            @try {
+                CALayer *nowSource=nil,*nowOwner=nil; NSUInteger nowMotion=0;
+                NSString *now=DescribeMask(strong,&nowSource,&nowOwner,NULL,NULL,&nowMotion,NULL,NULL,NULL);
+                if (![now isEqualToString:signature] || ![Config[@"enabled"] boolValue] || !Visible(strong) || !TimeText(strong.text ?: strong.attributedText.string)) {
+                    if ([Config[@"enabled"] boolValue] && Visible(strong) && TimeText(strong.text ?: strong.attributedText.string)) Schedule(strong);
+                    else RemoveOverlay(strong);
+                } else {
+                    CALayer *installHost=(usedNative && nowOwner) ? nowOwner : strong.layer;
+                    if (edgeOK) InstallEdgeContents(state,ring,bevel,tinted.scale);
+                    else ClearEdges(state);
+                    InstallMask(state,tinted,usedNative && nowOwner!=nil,nowSource,installHost,strong);
+                    state.signature=signature;
+                    ApplyStyle(strong,state,installHost,nowMotion);
+                }
+            } @catch (NSException *exception) {
+                RemoveOverlay(strong);
+                state.maskMode=[@"兼容异常：" stringByAppendingString:exception.name];
+            } @finally {
+                if (ring) CGImageRelease(ring);
+                if (bevel) CGImageRelease(bevel);
+                if (state.ticket==ticket) state.busy=NO;
+            }
+            if (strong && state.dirty && state.ticket==ticket) { state.dirty=NO; Schedule(strong); }
+        });
+    });
 }
 static void (*OrigLayout)(id,SEL);
 static void (*OrigMove)(id,SEL);
@@ -459,18 +593,23 @@ static void Finished(id obj,SEL sel,BOOL value) {
     OrigFinished(obj,sel,value);
     LSGCState *s=objc_getAssociatedObject(obj,&StateKey); s.signature=nil; Schedule(obj);
 }
+static void NoteHook(const char *name,BOOL ok) {
+    NSString *line=[NSString stringWithFormat:@"%s=%@",name,ok?@"是":@"否"];
+    HookReport=HookReport.length ? [HookReport stringByAppendingFormat:@" %@",line] : line;
+}
 static void Hook(const char *name,IMP replacement,IMP *original,NSUInteger arguments) {
     SEL sel=sel_registerName(name); Method method=class_getInstanceMethod(GlassClass,sel);
-    if (!method || method_getNumberOfArguments(method)!=arguments) return;
+    if (!method || method_getNumberOfArguments(method)!=arguments) { NoteHook(name,NO); return; }
     char ret[16]={0}; method_getReturnType(method,ret,sizeof(ret));
-    if (ret[0]!='v') return;
+    if (ret[0]!='v') { NoteHook(name,NO); return; }
     MSHookMessageEx(GlassClass,sel,replacement,original);
+    NoteHook(name,original && *original);
 }
 static void InstallHooks(void) {
     if (Hooked) return;
     Class cls=NSClassFromString(@"CCLiquidGlassLabel");
     if (!cls || ![cls isSubclassOfClass:UILabel.class]) return;
-    GlassClass=cls;
+    GlassClass=cls; HookReport=nil;
     Hook("layoutSubviews",(IMP)Layout,(IMP *)&OrigLayout,2);
     Hook("didMoveToWindow",(IMP)Move,(IMP *)&OrigMove,2);
     Hook("setText:",(IMP)Text,(IMP *)&OrigText,3);
@@ -504,11 +643,11 @@ static void WriteDiagnostics(void) {
             NSMutableArray *chain=[NSMutableArray array];
             UIView *v=label;
             for (NSUInteger i=0;v && i<12;i++,v=v.superview) [chain addObject:NSStringFromClass(v.class)];
-            [details addObject:[NSString stringWithFormat:@"时间形态=%@ 锁屏范围=%@ 可见=%@\n模式=%@\n%@",time?@"是":@"否",lock?@"是":@"否",Visible(label)?@"是":@"否",s.maskMode?:@"尚未渲染",[chain componentsJoinedByString:@" > "]]];
+            [details addObject:[NSString stringWithFormat:@"时间形态=%@ 锁屏范围=%@ 可见=%@ 分隔符=%@\n模式=%@\n%@",time?@"是":@"否",lock?@"是":@"否",Visible(label)?@"是":@"否",SeparatorCodes(label.text ?: label.attributedText.string),s.maskMode?:@"尚未渲染",[chain componentsJoinedByString:@" > "]]];
         }
     }
-    NSString *report=[NSString stringWithFormat:@"兼容层 1.5.0\n类已加载：%@\nHook 已安装：%@\n玻璃标签：%lu\n时间标签：%lu\n锁屏范围命中：%lu\n已附加渐变：%lu\n开关：%@\n\n%@",
-        GlassClass?@"是":@"否",Hooked?@"是":@"否",(unsigned long)Labels.allObjects.count,(unsigned long)clocks,(unsigned long)scoped,(unsigned long)active,[Config[@"enabled"] boolValue]?@"开":@"关",[details componentsJoinedByString:@"\n\n"]];
+    NSString *report=[NSString stringWithFormat:@"兼容层 %@\n类已加载：%@\nHook 已安装：%@\nHook 明细：%@\n玻璃标签：%lu\n时间标签：%lu\n锁屏范围命中：%lu\n已附加渐变：%lu\n开关：%@\n\n%@",
+        LSGCVersionString,GlassClass?@"是":@"否",Hooked?@"是":@"否",HookReport?:@"无",(unsigned long)Labels.allObjects.count,(unsigned long)clocks,(unsigned long)scoped,(unsigned long)active,[Config[@"enabled"] boolValue]?@"开":@"关",[details componentsJoinedByString:@"\n\n"]];
     CFPreferencesSetAppValue(CFSTR("diagnosticReport"),(__bridge CFStringRef)report,(__bridge CFStringRef)Domain);
     CFPreferencesAppSynchronize((__bridge CFStringRef)Domain);
     CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),Replied,NULL,NULL,true);

@@ -1,6 +1,16 @@
-# LockScreenGradientClock 1.5.0 — JSON 导入导出与遮罩修复测试版
+# LockScreenGradientClock 1.5.2 — 主线程与诊断
 
-## 1.5.0 当前版本
+## 1.5.2 当前版本
+
+颜色、透明度、方向和停止点不再触发遮罩重绘。遮罩签名未变且图层已挂上时直接返回。玻璃染色和彩边距离场在后台队列计算，截图仍在主线程。遮罩倍率跟随屏幕，像素预算约 100 万。
+
+减少动态效果、低电量或常亮显示时停止变色动画和彩边闪动；常亮时叠加浓度乘 0.4。降低透明度时不走玻璃淡边，改用普通浓度。
+
+诊断版本与 `LSGCVersion.h` 一致，并列出每个 Hook 是否装上，以及非数字分隔符的 Unicode 码点，不记录时间文字。选色器拖动按 120ms 合并写入。工作流会编译运行数学测试，并执行 `scripts/verify_packages.py`。
+
+从 1.5.1 替换：Tweak.xm、control、Preferences/LSGCRootListController.m、Preferences/Makefile、Preferences/Resources/Info.plist、.github/workflows/build.yml，新增 LSGCVersion.h。
+
+## 1.5.0 历史更新
 
 新增配置文件按钮：导出当前全部视觉参数为 JSON，通过分享面板保存到文件；导入 JSON 校验 format/schema、已知参数类型和范围，文件限 256 KB，未知键忽略，缺失键保留当前值。导入确认之后才保存回退快照并应用。范围仅为本插件视觉设置，不包含总开关、兼容模式、严格层级、已保存方案库及原 Liquidify 设置。取消/校验失败不更改设置；导入后可用恢复上一次设置撤销。
 
