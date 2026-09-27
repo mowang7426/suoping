@@ -126,17 +126,88 @@ static CFStringRef const Replied=CFSTR("com.minis.lockscreengradientclock/diagno
 @interface LSGCRootListController : PSListController <UIColorPickerViewControllerDelegate, UIDocumentPickerDelegate>
 @property(nonatomic,copy) NSString *colorKey;
 @property(nonatomic) BOOL waiting;
+@property(nonatomic) BOOL sampling;
 @property(nonatomic) BOOL editCheckpointMade;
 @property(nonatomic) NSUInteger colorSaveToken;
 - (NSDictionary *)visualSchema;
 - (void)checkpoint;
 - (void)receivedReport;
+- (void)receivedSample;
 @end
 static void Reply(CFNotificationCenterRef center, void *observer, CFStringRef name,const void *object,CFDictionaryRef userInfo) {
     (void)center; (void)name; (void)object; (void)userInfo;
     LSGCRootListController *controller=(__bridge LSGCRootListController *)observer;
     dispatch_async(dispatch_get_main_queue(), ^{ [controller receivedReport]; });
 }
+static void SampleReply(CFNotificationCenterRef center, void *observer, CFStringRef name,const void *object,CFDictionaryRef userInfo) {
+    (void)center; (void)name; (void)object; (void)userInfo;
+    LSGCRootListController *controller=(__bridge LSGCRootListController *)observer;
+    dispatch_async(dispatch_get_main_queue(), ^{ [controller receivedSample]; });
+}
+static UIColor *LSGCHexColor(NSString *hex) {
+    NSPredicate *valid=[NSPredicate predicateWithFormat:@"SELF MATCHES %@",@"#[0-9A-Fa-f]{6}"];
+    if (![valid evaluateWithObject:hex]) return UIColor.systemGrayColor;
+    unsigned value=0; [[NSScanner scannerWithString:[hex substringFromIndex:1]] scanHexInt:&value];
+    return [UIColor colorWithRed:((value>>16)&255)/255.0 green:((value>>8)&255)/255.0 blue:(value&255)/255.0 alpha:1];
+}
+@interface LSGCPreviewCell : PSTableCell
+@property(nonatomic,strong) UIView *swatch;
+@property(nonatomic) CGSize drawnSize;
+- (void)refreshBar;
+@end
+@implementation LSGCPreviewCell
+- (instancetype)initWithStyle:(UITableViewCellStyle)style reuseIdentifier:(NSString *)identifier specifier:(PSSpecifier *)specifier {
+    self=[super initWithStyle:style reuseIdentifier:identifier specifier:specifier];
+    if (!self) return nil;
+    self.selectionStyle=UITableViewCellSelectionStyleNone;
+    self.textLabel.text=nil; self.detailTextLabel.text=nil;
+    self.swatch=[[UIView alloc] init];
+    self.swatch.layer.cornerRadius=12; self.swatch.clipsToBounds=YES;
+    self.swatch.translatesAutoresizingMaskIntoConstraints=NO;
+    [self.contentView addSubview:self.swatch];
+    [NSLayoutConstraint activateConstraints:@[
+        [self.swatch.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor constant:16],
+        [self.swatch.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor constant:-16],
+        [self.swatch.centerYAnchor constraintEqualToAnchor:self.contentView.centerYAnchor],
+        [self.swatch.heightAnchor constraintEqualToConstant:36]
+    ]];
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(refreshBar) name:LSGCSwatchesChanged object:nil];
+    return self;
+}
+- (void)dealloc { [[NSNotificationCenter defaultCenter] removeObserver:self]; }
+- (void)layoutSubviews {
+    [super layoutSubviews];
+    if (!CGSizeEqualToSize(self.drawnSize,self.swatch.bounds.size)) [self refreshBar];
+}
+- (void)refreshBar {
+    self.textLabel.text=nil;
+    CGSize size=self.swatch.bounds.size;
+    if (size.width<2 || size.height<2) return;
+    CFPreferencesAppSynchronize(Domain);
+    NSArray *fallback=@[@"#39D6ED",@"#4D7CFF",@"#AD4DF5",@"#F950B0",@"#FFBD61"];
+    CGFloat comps[20];
+    for (NSUInteger i=0;i<5;i++) {
+        NSString *key=[NSString stringWithFormat:@"color%lu",(unsigned long)i+1];
+        NSString *hex=CFBridgingRelease(CFPreferencesCopyAppValue((__bridge CFStringRef)key,Domain));
+        UIColor *color=LSGCHexColor([hex isKindOfClass:NSString.class]?hex:fallback[i]);
+        CGFloat r=0,g=0,b=0,a=1;
+        if (![color getRed:&r green:&g blue:&b alpha:&a]) r=g=b=0.5;
+        comps[i*4]=r; comps[i*4+1]=g; comps[i*4+2]=b; comps[i*4+3]=1;
+    }
+    UIGraphicsBeginImageContextWithOptions(size,YES,0);
+    CGContextRef ctx=UIGraphicsGetCurrentContext();
+    CGColorSpaceRef space=CGColorSpaceCreateDeviceRGB();
+    CGFloat locs[5]={0,0.25,0.5,0.75,1};
+    CGGradientRef gradient=CGGradientCreateWithColorComponents(space,comps,locs,5);
+    if (ctx && gradient) CGContextDrawLinearGradient(ctx,gradient,CGPointZero,CGPointMake(size.width,0),0);
+    UIImage *image=UIGraphicsGetImageFromCurrentImageContext();
+    UIGraphicsEndImageContext();
+    if (gradient) CGGradientRelease(gradient);
+    CGColorSpaceRelease(space);
+    self.swatch.layer.contents=(__bridge id)image.CGImage;
+    self.drawnSize=size;
+}
+@end
 @implementation LSGCRootListController
 - (NSArray *)specifiers {
     if (!_specifiers) {
@@ -147,6 +218,10 @@ static void Reply(CFNotificationCenterRef center, void *observer, CFStringRef na
             if ([[spec propertyForKey:@"key"] isEqual:key]) { [colors addObject:spec]; break; }
         }
         if (colors.count==5) {
+            PSSpecifier *preview=[PSSpecifier preferenceSpecifierNamed:@"" target:self set:NULL get:NULL detail:nil cell:PSLinkCell edit:nil];
+            [preview setProperty:LSGCPreviewCell.class forKey:@"cellClass"];
+            [preview setProperty:@72 forKey:@"height"];
+            [preview setProperty:@YES forKey:@"enabled"];
             PSSpecifier *strip=[PSSpecifier preferenceSpecifierNamed:@"" target:self set:NULL get:NULL detail:nil cell:PSLinkCell edit:nil];
             [strip setProperty:LSGCColorStripCell.class forKey:@"cellClass"];
             [strip setProperty:@76 forKey:@"height"];
@@ -156,7 +231,7 @@ static void Reply(CFNotificationCenterRef center, void *observer, CFStringRef na
             BOOL inserted=NO;
             for (PSSpecifier *spec in loaded) {
                 if ([colors containsObject:spec]) {
-                    if (!inserted) { [display addObject:strip]; inserted=YES; }
+                    if (!inserted) { [display addObject:preview]; [display addObject:strip]; inserted=YES; }
                 } else [display addObject:spec];
             }
             _specifiers=display;
@@ -170,18 +245,22 @@ static void Reply(CFNotificationCenterRef center, void *observer, CFStringRef na
         LSGCColorStripCell *strip=(LSGCColorStripCell *)cell;
         strip.pickerOwner=(id<LSGCSwatchOwner>)self;
         [strip enableColorInteraction]; [strip refreshColors];
-    }
+    } else if ([cell isKindOfClass:LSGCPreviewCell.class]) [(LSGCPreviewCell *)cell refreshBar];
     return cell;
 }
 - (void)viewDidLoad {
     [super viewDidLoad]; self.title=@"锁屏时间渐变";
-    CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),(__bridge void *)self,Reply,Replied,NULL,CFNotificationSuspensionBehaviorDeliverImmediately);
+    CFNotificationCenterRef center=CFNotificationCenterGetDarwinNotifyCenter();
+    CFNotificationCenterAddObserver(center,(__bridge void *)self,Reply,Replied,NULL,CFNotificationSuspensionBehaviorDeliverImmediately);
+    CFNotificationCenterAddObserver(center,(__bridge void *)self,SampleReply,CFSTR("com.minis.lockscreengradientclock/sampled"),NULL,CFNotificationSuspensionBehaviorDeliverImmediately);
 }
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated]; self.editCheckpointMade=NO;
 }
 - (void)dealloc {
-    CFNotificationCenterRemoveObserver(CFNotificationCenterGetDarwinNotifyCenter(),(__bridge void *)self,Replied,NULL);
+    CFNotificationCenterRef center=CFNotificationCenterGetDarwinNotifyCenter();
+    CFNotificationCenterRemoveObserver(center,(__bridge void *)self,Replied,NULL);
+    CFNotificationCenterRemoveObserver(center,(__bridge void *)self,CFSTR("com.minis.lockscreengradientclock/sampled"),NULL);
 }
 - (void)save:(id)value key:(NSString *)key {
     if (!key.length || !value) return;
@@ -478,5 +557,71 @@ static void Reply(CFNotificationCenterRef center, void *observer, CFStringRef na
     CFPreferencesAppSynchronize(Domain);
     NSString *report=CFBridgingRelease(CFPreferencesCopyAppValue(CFSTR("diagnosticReport"),Domain));
     [self showMessage:report ?: @"收到响应但未读取到报告，请重试。"];
+}
+- (NSDictionary *)builtinStyles {
+    NSDictionary *plain=@{@"customStopsEnabled":@NO,@"reverseColors":@NO,@"independentEdges":@YES};
+    NSMutableDictionary *styles=[NSMutableDictionary dictionary];
+    NSDictionary *table=@{
+        @"清晨":@[@"#F7E2B8",@"#F7B27A",@"#F28BB8",@"#8EC8F5",@"#6E8CFF",@"#FFF6E4",@"#F8C7D8",@"#C7E4FF"],
+        @"正午":@[@"#39D6ED",@"#4D7CFF",@"#AD4DF5",@"#F950B0",@"#FFBD61",@"#D0FAFF",@"#B39CFF",@"#F7A9DD"],
+        @"夜紫":@[@"#2A2468",@"#4C3A9A",@"#7A45B8",@"#C46BE0",@"#F0C4FF",@"#D9D4FF",@"#C4B0FF",@"#F3D8FF"],
+        @"粉金":@[@"#FFF1DB",@"#F7B2CB",@"#E1B7FF",@"#FFD296",@"#F7D7A8",@"#FFF6EA",@"#F7C3D4",@"#FFE0B0"],
+        @"单色玻璃":@[@"#F7FBFF",@"#E7F2F8",@"#D5E4EF",@"#C5D6E4",@"#B7C9D8",@"#FFFFFF",@"#EAF3F8",@"#D5E4EF"],
+        @"海盐":@[@"#D8FFF4",@"#7EE0D0",@"#3EC6C0",@"#6AA8E8",@"#8E7CFF",@"#F3FFFC",@"#B8F3EA",@"#D4E2FF"],
+        @"晚霞":@[@"#FFD0A6",@"#FF8B7A",@"#E85D8C",@"#A24AD4",@"#5C4DDB",@"#FFE7D0",@"#FFC1D4",@"#D7C2FF"],
+        @"冰川":@[@"#F5FBFF",@"#C9F1FF",@"#8FD4F5",@"#6AA8FF",@"#8E7CF0",@"#FFFFFF",@"#D7F4FF",@"#D5DEFF"]
+    };
+    for (NSString *name in @[@"清晨",@"正午",@"夜紫",@"粉金",@"单色玻璃",@"海盐",@"晚霞",@"冰川"]) {
+        NSArray *hex=table[name];
+        NSMutableDictionary *values=[plain mutableCopy];
+        for (NSUInteger i=0;i<5;i++) values[[NSString stringWithFormat:@"color%lu",(unsigned long)i+1]]=hex[i];
+        for (NSUInteger i=0;i<3;i++) values[[NSString stringWithFormat:@"edgeColor%lu",(unsigned long)i+1]]=hex[i+5];
+        styles[name]=values;
+    }
+    return styles;
+}
+- (void)applyBuiltinStyle {
+    NSDictionary *styles=[self builtinStyles];
+    NSArray *names=@[@"清晨",@"正午",@"夜紫",@"粉金",@"单色玻璃",@"海盐",@"晚霞",@"冰川"];
+    UIAlertController *sheet=[UIAlertController alertControllerWithTitle:@"内置风格" message:@"写入五种颜色和彩边颜色。不修改总开关、玻璃浓度和角度。" preferredStyle:UIAlertControllerStyleActionSheet];
+    for (NSString *name in names) {
+        [sheet addAction:[UIAlertAction actionWithTitle:name style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+            (void)action;
+            NSMutableDictionary *merged=[[self currentVisuals] mutableCopy];
+            [merged addEntriesFromDictionary:styles[name]];
+            self.editCheckpointMade=NO; [self checkpoint];
+            [self writeVisuals:merged]; self.editCheckpointMade=NO;
+        }]];
+    }
+    [sheet addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    sheet.popoverPresentationController.sourceView=self.view;
+    sheet.popoverPresentationController.sourceRect=CGRectMake(CGRectGetMidX(self.view.bounds),CGRectGetMidY(self.view.bounds),1,1);
+    [self presentViewController:sheet animated:YES completion:nil];
+}
+- (void)requestWallpaperSample:(int)mode {
+    if (self.sampling) return;
+    self.editCheckpointMade=NO; [self checkpoint];
+    CFPreferencesSetAppValue(CFSTR("wallpaperSampleMode"),(__bridge CFNumberRef)@(mode),Domain);
+    CFPreferencesAppSynchronize(Domain);
+    self.sampling=YES;
+    CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),CFSTR("com.minis.lockscreengradientclock/sampleWallpaper"),NULL,NULL,true);
+    __weak LSGCRootListController *weak=self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,3*NSEC_PER_SEC),dispatch_get_main_queue(), ^{
+        LSGCRootListController *strong=weak;
+        if (!strong.sampling) return;
+        strong.sampling=NO;
+        [strong paletteMessage:[NSString stringWithFormat:@"SpringBoard 未响应，当前配色未改变。请确认安装的是 %@ 并已注销。",LSGCVersionString]];
+    });
+}
+- (void)sampleWallpaperClose { [self requestWallpaperSample:0]; }
+- (void)sampleWallpaperBright { [self requestWallpaperSample:1]; }
+- (void)receivedSample {
+    if (!self.sampling) return;
+    self.sampling=NO;
+    CFPreferencesAppSynchronize(Domain);
+    NSString *message=CFBridgingRelease(CFPreferencesCopyAppValue(CFSTR("wallpaperSampleMessage"),Domain));
+    [self reloadSpecifiers];
+    [[NSNotificationCenter defaultCenter] postNotificationName:LSGCSwatchesChanged object:nil];
+    [self paletteMessage:[message isKindOfClass:NSString.class]?message:@"壁纸取色没有返回结果，当前配色未改变。"];
 }
 @end

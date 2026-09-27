@@ -7,6 +7,7 @@
 #import <math.h>
 #import "LSGCEdgeMath.h"
 #import "LSGCGradientMath.h"
+#import "LSGCPalette.h"
 #import "LSGCVersion.h"
 
 // An optional companion: never patch, replace or distribute Liquidify binaries.
@@ -15,6 +16,10 @@ static NSString *const Domain = @"com.minis.lockscreengradientclock";
 static CFStringRef const Changed = CFSTR("com.minis.lockscreengradientclock/changed");
 static CFStringRef const Diagnose = CFSTR("com.minis.lockscreengradientclock/diagnose");
 static CFStringRef const Replied = CFSTR("com.minis.lockscreengradientclock/diagnosed");
+static CFStringRef const Sample = CFSTR("com.minis.lockscreengradientclock/sampleWallpaper");
+static CFStringRef const Sampled = CFSTR("com.minis.lockscreengradientclock/sampled");
+static CGFloat ParallaxDegrees;
+static CFTimeInterval ParallaxStamp;
 static NSDictionary *Config;
 static NSHashTable<UILabel *> *Labels;
 static Class GlassClass;
@@ -41,6 +46,7 @@ static void Discover(void);
 @property(nonatomic) NSUInteger revision;
 @property(nonatomic) NSUInteger ticket;
 @property(nonatomic) NSUInteger motionBits;
+@property(nonatomic) NSUInteger styleToken;
 @end
 @implementation LSGCState
 @end
@@ -63,7 +69,7 @@ static CGFloat Clamp(CGFloat x, CGFloat lo, CGFloat hi) {
 }
 static void LoadConfig(void) {
     CFPreferencesAppSynchronize((__bridge CFStringRef)Domain);
-    NSMutableDictionary *values=[@{@"enabled":@YES,@"color1":@"#39D6ED",@"color2":@"#4D7CFF",@"color3":@"#AD4DF5",@"color4":@"#F950B0",@"color5":@"#FFBD61",@"direction":@0,@"opacity":@0.65,@"animate":@NO,@"strictScope":@YES,@"maskMode":@0,@"glassBlend":@YES,@"glassTint":@0.32,@"edgeEnabled":@NO,@"edgePalette":@0,@"edgeCore":@0.22,@"edgeStrength":@0.65,@"edgeWidth":@1.5,@"edgeHighlight":@0.35,@"edgeReveal":@NO,@"customAngleEnabled":@NO,@"gradientAngle":@0,@"customStopsEnabled":@NO,@"stop1":@0,@"stop2":@0.25,@"stop3":@0.5,@"stop4":@0.75,@"stop5":@1,@"reverseColors":@NO,@"independentEdges":@NO,@"edgeColor1":@"#D0FAFF",@"edgeColor2":@"#B39CFF",@"edgeColor3":@"#F7A9DD"} mutableCopy];
+    NSMutableDictionary *values=[@{@"enabled":@YES,@"color1":@"#39D6ED",@"color2":@"#4D7CFF",@"color3":@"#AD4DF5",@"color4":@"#F950B0",@"color5":@"#FFBD61",@"direction":@0,@"opacity":@0.65,@"animate":@NO,@"strictScope":@YES,@"maskMode":@0,@"glassBlend":@YES,@"glassTint":@0.32,@"edgeEnabled":@NO,@"edgePalette":@0,@"edgeCore":@0.22,@"edgeStrength":@0.65,@"edgeWidth":@1.5,@"edgeHighlight":@0.35,@"edgeReveal":@NO,@"customAngleEnabled":@NO,@"gradientAngle":@0,@"customStopsEnabled":@NO,@"stop1":@0,@"stop2":@0.25,@"stop3":@0.5,@"stop4":@0.75,@"stop5":@1,@"reverseColors":@NO,@"independentEdges":@NO,@"edgeColor1":@"#D0FAFF",@"edgeColor2":@"#B39CFF",@"edgeColor3":@"#F7A9DD",@"timeShift":@NO,@"parallaxAngle":@NO} mutableCopy];
     for (NSString *key in values.allKeys) {
         id value=CFBridgingRelease(CFPreferencesCopyAppValue((__bridge CFStringRef)key,(__bridge CFStringRef)Domain));
         if (value) values[key]=value;
@@ -419,10 +425,63 @@ static NSString *DescribeMask(UILabel *label,CALayer **sourceOut,CALayer **owner
         source ? [NSValue valueWithCATransform3D:source.transform] : @"none",owner,QuantizedRect(owner ? owner.bounds : label.bounds,scale),
         ReadFlag(label,@"cachedBuildFinished"),native,scale,Clamp([Config[@"edgeWidth"] doubleValue],0.5,4),glass,edges];
 }
+static void ConsiderWallpaper(UIView *view,NSArray<NSString *> *needles,NSUInteger depth,UIView **best,CGFloat *bestArea) {
+    if (!view || depth>28) return;
+    NSString *name=NSStringFromClass(view.class);
+    for (NSString *needle in needles) if ([name containsString:needle]) {
+        CGFloat area=view.bounds.size.width*view.bounds.size.height;
+        if (!view.hidden && view.alpha>0.05 && area>180*180 && area>*bestArea) { *bestArea=area; *best=view; }
+        break;
+    }
+    for (UIView *child in view.subviews) ConsiderWallpaper(child,needles,depth+1,best,bestArea);
+}
+static UIView *WallpaperView(void) {
+    UIView *best=nil; CGFloat area=0;
+    NSArray *needles=@[@"Wallpaper",@"Poster"];
+    for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
+        if (![scene isKindOfClass:UIWindowScene.class]) continue;
+        for (UIWindow *window in ((UIWindowScene *)scene).windows) ConsiderWallpaper(window,needles,0,&best,&area);
+    }
+    return best;
+}
+static void UpdateParallax(void) {
+    BOOL quiet=UIAccessibilityIsReduceMotionEnabled() || NSProcessInfo.processInfo.lowPowerModeEnabled;
+    if (![Config[@"parallaxAngle"] boolValue] || quiet) { ParallaxDegrees=0; return; }
+    CFTimeInterval now=CACurrentMediaTime();
+    if (ParallaxStamp>0 && now-ParallaxStamp<0.25) return;
+    ParallaxStamp=now;
+    UIView *wall=WallpaperView();
+    CALayer *layer=wall ? (wall.layer.presentationLayer ?: wall.layer) : nil;
+    CGFloat shift=layer ? layer.transform.m41 : 0;
+    ParallaxDegrees=wall ? Clamp(shift/40.0*12.0,-12,12) : 0;
+}
+static NSUInteger StyleToken(NSUInteger motionBits) {
+    NSUInteger token=((NSUInteger)Revision) ^ (motionBits<<16);
+    BOOL quiet=(motionBits&7)!=0;
+    if ([Config[@"timeShift"] boolValue] && !quiet) {
+        NSDateComponents *parts=[[NSCalendar currentCalendar] components:(NSCalendarUnitHour|NSCalendarUnitMinute) fromDate:[NSDate date]];
+        token ^= (NSUInteger)(parts.hour*60+parts.minute);
+    }
+    if ([Config[@"parallaxAngle"] boolValue] && !quiet) token ^= ((NSUInteger)lround(ParallaxDegrees*4.0))<<8;
+    return token;
+}
+static UIColor *ShiftedColor(UIColor *color,double hue) {
+    CGFloat r=0,g=0,b=0,a=1;
+    if (![color getRed:&r green:&g blue:&b alpha:&a]) {
+        CGFloat w=0;
+        if (![color getWhite:&w alpha:&a]) return color;
+        r=g=b=w;
+    }
+    double outR,outG,outB;
+    LSGCShiftRGB(r,g,b,hue,1,1,&outR,&outG,&outB);
+    return [UIColor colorWithRed:outR green:outG blue:outB alpha:a];
+}
 static void ApplyStyle(UILabel *label,LSGCState *s,CALayer *host,NSUInteger motionBits) {
-    BOOL styleDirty=s.revision!=Revision || s.motionBits!=motionBits;
+    NSUInteger token=StyleToken(motionBits);
+    BOOL styleDirty=s.styleToken!=token || s.motionBits!=motionBits;
     BOOL glass=[Config[@"glassBlend"] boolValue] && (motionBits&8)==0;
-    s.motionBits=motionBits;
+    BOOL quiet=(motionBits&7)!=0;
+    s.motionBits=motionBits; s.styleToken=token;
     [CATransaction begin]; [CATransaction setDisableActions:YES];
     s.gradient.bounds=(CGRect){CGPointZero,host.bounds.size};
     s.gradient.position=CGPointMake(CGRectGetMidX(host.bounds),CGRectGetMidY(host.bounds));
@@ -431,21 +490,31 @@ static void ApplyStyle(UILabel *label,LSGCState *s,CALayer *host,NSUInteger moti
         s.gradient.opacity *= Clamp([Config[@"edgeCore"] doubleValue],0,1);
     if (motionBits&4) s.gradient.opacity*=0.4;
     NSInteger direction=[Config[@"direction"] integerValue];
-    s.gradient.startPoint=direction==1 ? CGPointMake(.5,0) : CGPointMake(0,.5);
-    s.gradient.endPoint=direction==1 ? CGPointMake(.5,1) : CGPointMake(1,.5);
-    if (direction==2) { s.gradient.startPoint=CGPointMake(0,0); s.gradient.endPoint=CGPointMake(1,1); }
-    if ([Config[@"customAngleEnabled"] boolValue]) {
+    double base=[Config[@"customAngleEnabled"] boolValue] ? [Config[@"gradientAngle"] doubleValue] : (direction==1 ? 90 : (direction==2 ? 45 : 0));
+    BOOL useAngle=[Config[@"customAngleEnabled"] boolValue] || ([Config[@"parallaxAngle"] boolValue] && !quiet);
+    if ([Config[@"parallaxAngle"] boolValue] && !quiet) base+=ParallaxDegrees;
+    if (useAngle) {
         double endpoints[4];
-        LSGCGradientEndpoints([Config[@"gradientAngle"] doubleValue],host.bounds.size.width,host.bounds.size.height,endpoints);
+        LSGCGradientEndpoints(base,host.bounds.size.width,host.bounds.size.height,endpoints);
         s.gradient.startPoint=CGPointMake(endpoints[0],endpoints[1]);
         s.gradient.endPoint=CGPointMake(endpoints[2],endpoints[3]);
+    } else {
+        s.gradient.startPoint=direction==1 ? CGPointMake(.5,0) : CGPointMake(0,.5);
+        s.gradient.endPoint=direction==1 ? CGPointMake(.5,1) : CGPointMake(1,.5);
+        if (direction==2) { s.gradient.startPoint=CGPointMake(0,0); s.gradient.endPoint=CGPointMake(1,1); }
     }
     if (styleDirty) {
         NSArray *defaults=@[@"#39D6ED",@"#4D7CFF",@"#AD4DF5",@"#F950B0",@"#FFBD61"];
+        double hue=0;
+        if ([Config[@"timeShift"] boolValue] && !quiet) {
+            NSDateComponents *parts=[[NSCalendar currentCalendar] components:(NSCalendarUnitHour|NSCalendarUnitMinute) fromDate:[NSDate date]];
+            hue=LSGCHueForHour(parts.hour+parts.minute/60.0);
+        }
         NSMutableArray *colors=[NSMutableArray array];
         for (NSUInteger i=0;i<5;i++) {
             NSString *key=[NSString stringWithFormat:@"color%lu",(unsigned long)i+1];
             UIColor *c=Color(Config[key],Color(defaults[i],UIColor.whiteColor));
+            if (hue!=0) c=ShiftedColor(c,hue);
             [colors addObject:(__bridge id)c.CGColor];
         }
         if ([Config[@"reverseColors"] boolValue]) colors=[[[colors reverseObjectEnumerator] allObjects] mutableCopy];
@@ -516,7 +585,8 @@ static void Apply(UILabel *label) {
     NSString *signature=DescribeMask(label,&source,NULL,&host,&native,&motion,&glass,&edges,&scale);
     BOOL attached=s.gradient.superlayer==host;
     BOOL edgesReady=!edges || !s.edgeHost || s.edgeHost.superlayer==host;
-    if ([s.signature isEqualToString:signature] && s.revision==Revision && s.motionBits==motion && attached && edgesReady) return;
+    UpdateParallax();
+    if ([s.signature isEqualToString:signature] && s.styleToken==StyleToken(motion) && attached && edgesReady) return;
     if ([s.signature isEqualToString:signature]) { ApplyStyle(label,s,host,motion); return; }
     s.busy=YES;
     UIImage *image=nil; BOOL usedNative=NO;
@@ -652,11 +722,91 @@ static void WriteDiagnostics(void) {
     CFPreferencesAppSynchronize((__bridge CFStringRef)Domain);
     CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),Replied,NULL,NULL,true);
 }
+static BOOL ColorRGB(UIColor *color,double *r,double *g,double *b) {
+    CGFloat rr=0,gg=0,bb=0,aa=1;
+    if ([color getRed:&rr green:&gg blue:&bb alpha:&aa]) { *r=rr; *g=gg; *b=bb; return YES; }
+    CGFloat w=0;
+    if ([color getWhite:&w alpha:&aa]) { *r=*g=*b=w; return YES; }
+    return NO;
+}
+static UIColor *ControllerWallpaperColor(void) {
+    Class cls=NSClassFromString(@"SBWallpaperController");
+    SEL shared=sel_registerName("sharedInstance");
+    if (!cls || ![cls respondsToSelector:shared]) return nil;
+    id ctrl=((id(*)(id,SEL))objc_msgSend)(cls,shared);
+    SEL sel=sel_registerName("averageColorForVariant:");
+    if (![ctrl respondsToSelector:sel]) return nil;
+    for (long long variant=1; variant>=0; variant--) {
+        id color=((id(*)(id,SEL,long long))objc_msgSend)(ctrl,sel,variant);
+        if ([color isKindOfClass:UIColor.class]) return color;
+    }
+    return nil;
+}
+static UIColor *AverageOfView(UIView *view) {
+    CGSize size=view.bounds.size;
+    if (!view || size.width<2 || size.height<2) return nil;
+    UIGraphicsImageRendererFormat *format=[UIGraphicsImageRendererFormat preferredFormat];
+    format.opaque=YES; format.scale=1;
+    UIGraphicsImageRenderer *renderer=[[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(24,24) format:format];
+    UIImage *image=[renderer imageWithActions:^(UIGraphicsImageRendererContext *context) {
+        CGContextScaleCTM(context.CGContext,24.0/size.width,24.0/size.height);
+        [view.layer renderInContext:context.CGContext];
+    }];
+    CGImageRef cg=image.CGImage;
+    if (!cg) return nil;
+    unsigned char rgba[24*24*4];
+    for (NSUInteger i=0;i<sizeof(rgba);i++) rgba[i]=0;
+    CGColorSpaceRef space=CGColorSpaceCreateDeviceRGB();
+    CGContextRef ctx=CGBitmapContextCreate(rgba,24,24,8,24*4,space,kCGImageAlphaPremultipliedLast|kCGBitmapByteOrder32Big);
+    CGColorSpaceRelease(space);
+    if (!ctx) return nil;
+    CGContextDrawImage(ctx,CGRectMake(0,0,24,24),cg);
+    CGContextRelease(ctx);
+    double r=0,g=0,b=0; NSUInteger n=0;
+    for (NSUInteger i=0;i<24*24;i++) {
+        if (rgba[i*4+3]<16) continue;
+        r+=rgba[i*4]; g+=rgba[i*4+1]; b+=rgba[i*4+2]; n++;
+    }
+    if (!n) return nil;
+    return [UIColor colorWithRed:r/n/255.0 green:g/n/255.0 blue:b/n/255.0 alpha:1];
+}
+static NSString *HexRGB(double r,double g,double b) {
+    return [NSString stringWithFormat:@"#%02X%02X%02X",(int)lround(Clamp(r,0,1)*255),(int)lround(Clamp(g,0,1)*255),(int)lround(Clamp(b,0,1)*255)];
+}
+static void WriteSampleMessage(NSString *message,BOOL changed) {
+    CFPreferencesSetAppValue(CFSTR("wallpaperSampleMessage"),(__bridge CFStringRef)message,(__bridge CFStringRef)Domain);
+    CFPreferencesAppSynchronize((__bridge CFStringRef)Domain);
+    if (changed) CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),Changed,NULL,NULL,true);
+    CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),Sampled,NULL,NULL,true);
+}
+static void SampleWallpaper(void) {
+    CFPreferencesAppSynchronize((__bridge CFStringRef)Domain);
+    id modeValue=CFBridgingRelease(CFPreferencesCopyAppValue(CFSTR("wallpaperSampleMode"),(__bridge CFStringRef)Domain));
+    int brighter=[modeValue isKindOfClass:NSNumber.class] && [modeValue integerValue]==1;
+    UIColor *color=ControllerWallpaperColor();
+    BOOL fromSnapshot=NO;
+    if (!color) { color=AverageOfView(WallpaperView()); fromSnapshot=YES; }
+    double r=0,g=0,b=0;
+    if (!color || !ColorRGB(color,&r,&g,&b) || (fromSnapshot && r+g+b<0.02)) {
+        WriteSampleMessage(@"没有读到壁纸颜色，当前配色未改变。",NO);
+        return;
+    }
+    double colors[5][3],edges[3][3];
+    LSGCWallpaperPalette(r,g,b,brighter,colors,edges);
+    NSString *keys[5]={@"color1",@"color2",@"color3",@"color4",@"color5"};
+    for (int i=0;i<5;i++) CFPreferencesSetAppValue((__bridge CFStringRef)keys[i],(__bridge CFStringRef)HexRGB(colors[i][0],colors[i][1],colors[i][2]),(__bridge CFStringRef)Domain);
+    NSString *edgeKeys[3]={@"edgeColor1",@"edgeColor2",@"edgeColor3"};
+    for (int i=0;i<3;i++) CFPreferencesSetAppValue((__bridge CFStringRef)edgeKeys[i],(__bridge CFStringRef)HexRGB(edges[i][0],edges[i][1],edges[i][2]),(__bridge CFStringRef)Domain);
+    CFPreferencesSetAppValue(CFSTR("independentEdges"),(__bridge CFNumberRef)@YES,(__bridge CFStringRef)Domain);
+    WriteSampleMessage(brighter?@"已按更亮一档写入壁纸配色。":@"已按贴近壁纸写入配色。",YES);
+}
 static void Notification(CFNotificationCenterRef center,void *observer,CFStringRef name,const void *object,CFDictionaryRef info) {
     (void)center; (void)observer; (void)object; (void)info;
-    BOOL diagnostic=CFEqual(name,Diagnose);
+    BOOL diagnostic=name && CFEqual(name,Diagnose);
+    BOOL sample=name && CFEqual(name,Sample);
     dispatch_async(dispatch_get_main_queue(), ^{
         if (diagnostic) { WriteDiagnostics(); return; }
+        if (sample) { SampleWallpaper(); return; }
         LoadConfig(); Discover();
         for (UILabel *label in Labels.allObjects) Schedule(label);
     });
@@ -673,6 +823,7 @@ __attribute__((constructor)) static void Start(void) {
             CFNotificationCenterRef center=CFNotificationCenterGetDarwinNotifyCenter();
             CFNotificationCenterAddObserver(center,NULL,Notification,Changed,NULL,CFNotificationSuspensionBehaviorDeliverImmediately);
             CFNotificationCenterAddObserver(center,NULL,Notification,Diagnose,NULL,CFNotificationSuspensionBehaviorDeliverImmediately);
+            CFNotificationCenterAddObserver(center,NULL,Notification,Sample,NULL,CFNotificationSuspensionBehaviorDeliverImmediately);
             _dyld_register_func_for_add_image(AddedImage);
             Discover();
             [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *note) { (void)note; Discover(); }];

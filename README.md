@@ -1,6 +1,14 @@
-# LockScreenGradientClock 1.5.2 — 主线程与诊断
+# LockScreenGradientClock 1.6.0 — 配色工坊、壁纸取色、会变的钟
 
-## 1.5.2 当前版本
+## 1.6.0 当前版本
+
+设置页五种颜色上方有实时色条。内置八套风格写入颜色和彩边颜色，不改总开关。贴近壁纸 / 比壁纸更亮向 SpringBoard 取锁屏壁纸主色，失败则保持当前配色，可用恢复上一次设置撤销。
+
+随时间变色以当前五色为中午基准。角度跟随壁纸视差最多偏 12°。常亮、低电量或减少动态效果时这两项保持静止。默认关闭。不扩展到日期行或待机时钟。
+
+从 1.5.2 替换：Tweak.xm、control、Preferences/LSGCRootListController.m、Preferences/Resources/Root.plist、Preferences/Resources/Info.plist、LSGCVersion.h、.github/workflows/build.yml；新增 LSGCPalette.h。
+
+## 1.5.2 历史更新
 
 颜色、透明度、方向和停止点不再触发遮罩重绘。遮罩签名未变且图层已挂上时直接返回。玻璃染色和彩边距离场在后台队列计算，截图仍在主线程。遮罩倍率跟随屏幕，像素预算约 100 万。
 

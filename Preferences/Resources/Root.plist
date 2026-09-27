@@ -70,7 +70,7 @@
 			<key>label</key>
 			<string>五色渐变</string>
 			<key>footerText</key>
-			<string>点击颜色项打开系统选色器，颜色按从左到右排列。</string>
+			<string>顶部色条跟随五种颜色。内置风格和壁纸取色只改颜色与彩边颜色，不改总开关。彩边要打开「彩边玻璃」才看得到。取色失败时当前配色不变。</string>
 		</dict>
 		<dict>
 			<key>cell</key>
@@ -144,6 +144,30 @@
 		</dict>
 		<dict>
 			<key>cell</key>
+			<string>PSButtonCell</string>
+			<key>label</key>
+			<string>套用内置风格</string>
+			<key>action</key>
+			<string>applyBuiltinStyle</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSButtonCell</string>
+			<key>label</key>
+			<string>贴近壁纸取色</string>
+			<key>action</key>
+			<string>sampleWallpaperClose</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSButtonCell</string>
+			<key>label</key>
+			<string>比壁纸更亮取色</string>
+			<key>action</key>
+			<string>sampleWallpaperBright</string>
+		</dict>
+		<dict>
+			<key>cell</key>
 			<string>PSSegmentCell</string>
 			<key>label</key>
 			<string>渐变方向</string>
@@ -191,6 +215,38 @@
 			<string>缓慢变色</string>
 			<key>key</key>
 			<string>animate</string>
+			<key>default</key>
+			<false/>
+			<key>defaults</key>
+			<string>com.minis.lockscreengradientclock</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>label</key>
+			<string>会变的钟</string>
+			<key>footerText</key>
+			<string>随时间变色以当前五种颜色为中午基准，早晚只偏色相。视差在壁纸移动时把渐变角偏最多 12°。常亮、低电量或减少动态效果时保持静止。默认关闭。</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>label</key>
+			<string>随时间变色</string>
+			<key>key</key>
+			<string>timeShift</string>
+			<key>default</key>
+			<false/>
+			<key>defaults</key>
+			<string>com.minis.lockscreengradientclock</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>label</key>
+			<string>角度跟随壁纸视差</string>
+			<key>key</key>
+			<string>parallaxAngle</string>
 			<key>default</key>
 			<false/>
 			<key>defaults</key>

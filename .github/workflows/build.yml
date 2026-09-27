@@ -56,6 +56,8 @@ jobs:
           /tmp/gradient_math_test
           c++ -std=c++17 -Wall -Wextra -Werror tests/edge_math_test.cpp -o /tmp/edge_math_test
           /tmp/edge_math_test
+          c++ -std=c++17 -Wall -Wextra -Werror tests/palette_test.cpp -o /tmp/palette_test
+          /tmp/palette_test
 
       - name: Verify package metadata
         run: |
