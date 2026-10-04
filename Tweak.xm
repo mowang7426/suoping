@@ -33,7 +33,6 @@ static NSUInteger Revision;
 static void Apply(UILabel *label);
 static void InstallHooks(void);
 static void InstallLabelHooks(void);
-static void InstallDateHooks(void);
 static void Discover(void);
 
 @interface LSGCState : NSObject
@@ -81,7 +80,7 @@ static void LoadConfig(void) {
         id value=CFBridgingRelease(CFPreferencesCopyAppValue((__bridge CFStringRef)key,(__bridge CFStringRef)Domain));
         if (value) values[key]=value;
     }
-    if (![Config isEqualToDictionary:values]) { Config=values; Revision++; }
+    Config=values; Revision++;
 }
 static UIColor *Color(id input, UIColor *fallback) {
     if (![input isKindOfClass:NSString.class]) return fallback;
@@ -774,7 +773,6 @@ static void Hook(const char *name,IMP replacement,IMP *original,NSUInteger argum
 }
 static void InstallHooks(void) {
     InstallLabelHooks();
-    InstallDateHooks();
     if (Hooked) return;
     Class cls=NSClassFromString(@"CCLiquidGlassLabel");
     if (!cls || ![cls isSubclassOfClass:UILabel.class]) return;
@@ -818,43 +816,10 @@ static void InstallLabelHooks(void) {
     MSHookMessageEx(cls,@selector(setAttributedText:),(IMP)LabelAttributed,(IMP *)&OrigLabelAttributed);
     LabelHooked=OrigLabelLayout && OrigLabelMove && OrigLabelText && OrigLabelAttributed;
 }
-static char DatePendingKey;
-static void TrackDateLabels(UIView *view,NSUInteger depth) {
-    if (depth>32) return;
-    if ([view isKindOfClass:UILabel.class]) {
-        UILabel *label=(UILabel *)view;
-        // Keep labels even while the vibrancy hierarchy is still being assembled.
-        [Labels addObject:label];
-        Schedule(label);
-    }
-    for (UIView *child in view.subviews) TrackDateLabels(child,depth+1);
-}
-static void ScheduleDateView(UIView *view) {
-    if (!NSThread.isMainThread || Rendering || objc_getAssociatedObject(view,&DatePendingKey)) return;
-    objc_setAssociatedObject(view,&DatePendingKey,@YES,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    __weak UIView *weak=view;
-    dispatch_async(dispatch_get_main_queue(), ^{
-        UIView *strong=weak;
-        if (!strong) return;
-        objc_setAssociatedObject(strong,&DatePendingKey,nil,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        TrackDateLabels(strong,0);
-    });
-}
-static void (*OrigDateLayout)(id,SEL);
-static void (*OrigDateWindow)(id,SEL);
-static void (*OrigDateSuperview)(id,SEL);
-static void DateLayout(id obj,SEL sel) { OrigDateLayout(obj,sel); ScheduleDateView(obj); }
-static void DateWindow(id obj,SEL sel) { OrigDateWindow(obj,sel); ScheduleDateView(obj); }
-static void DateSuperview(id obj,SEL sel) { OrigDateSuperview(obj,sel); ScheduleDateView(obj); }
-static void InstallDateHooks(void) {
-    static BOOL installed=NO;
-    if (installed) return;
-    Class cls=NSClassFromString(@"CSProminentSubtitleDateView");
-    if (!cls || ![cls isSubclassOfClass:UIView.class]) return;
-    MSHookMessageEx(cls,@selector(layoutSubviews),(IMP)DateLayout,(IMP *)&OrigDateLayout);
-    MSHookMessageEx(cls,@selector(didMoveToWindow),(IMP)DateWindow,(IMP *)&OrigDateWindow);
-    MSHookMessageEx(cls,@selector(didMoveToSuperview),(IMP)DateSuperview,(IMP *)&OrigDateSuperview);
-    installed=YES;
+static BOOL IsDateCandidate(UILabel *label) {
+    if (![Config[@"dateGradient"] boolValue]) return NO;
+    NSString *text=label.text ?: label.attributedText.string;
+    return ClockDateText(text) && InLockScreen(label);
 }
 static void Walk(UIView *view,NSUInteger depth) {
     if (!view || depth>64) return;
@@ -862,7 +827,7 @@ static void Walk(UIView *view,NSUInteger depth) {
     if ([view isKindOfClass:UILabel.class]) {
         UILabel *label=(UILabel *)view;
         BOOL glassLabel=GlassClass && [view isKindOfClass:GlassClass];
-        BOOL dateLabel=!glassLabel && DateOverlayParent(label)!=nil;
+        BOOL dateLabel=!glassLabel && (DateOverlayParent(label)!=nil || IsDateCandidate(label));
         if (glassLabel || dateLabel) { [Labels addObject:label]; Schedule(label); }
     }
     for (UIView *child in view.subviews) Walk(child,depth+1);
@@ -941,7 +906,6 @@ static void WriteDiagnostics(void) {
     report=[report stringByAppendingFormat:@"\n\n日期开关：%@\nUILabel Hook：%@\n日期标签：%lu\n日期渐变已附加：%lu\n%@\n日期控件树（仅类名与几何）：\n%@",
         [Config[@"dateGradient"] boolValue]?@"开":@"关",LabelHooked?@"是":@"否",(unsigned long)dates,(unsigned long)dateActive,
         [dateDetails componentsJoinedByString:@"\n"],[tree componentsJoinedByString:@"\n"]];
-    report=[report stringByAppendingFormat:@"\n日期容器 Hook：%@",(OrigDateLayout && OrigDateWindow && OrigDateSuperview)?@"是":@"否"];
     CFPreferencesSetAppValue(CFSTR("diagnosticReport"),(__bridge CFStringRef)report,(__bridge CFStringRef)Domain);
     CFPreferencesAppSynchronize((__bridge CFStringRef)Domain);
     CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),Replied,NULL,NULL,true);
