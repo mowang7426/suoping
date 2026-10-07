@@ -58,6 +58,11 @@
 			<key>min</key><real>0.80</real><key>max</key><real>3.50</real><key>increment</key><real>0.05</real>
 			<key>defaults</key><string>com.minis.lockscreengradientclock</string>
 		</dict>
+		<dict><key>cell</key><string>PSSliderCell</string><key>label</key><string>时间整体宽度</string><key>key</key><string>clockWidth</string><key>default</key><real>1.0</real><key>min</key><real>0.8</real><key>max</key><real>1.5</real><key>increment</key><real>0.05</real><key>defaults</key><string>com.minis.lockscreengradientclock</string></dict>
+		<dict><key>cell</key><string>PSSliderCell</string><key>label</key><string>数字间距</string><key>key</key><string>clockSpacing</string><key>default</key><real>0</real><key>min</key><real>-10</real><key>max</key><real>20</real><key>increment</key><real>1</real><key>defaults</key><string>com.minis.lockscreengradientclock</string></dict>
+		<dict><key>cell</key><string>PSSliderCell</string><key>label</key><string>冒号大小</string><key>key</key><string>clockColonScale</string><key>default</key><real>1.0</real><key>min</key><real>0.5</real><key>max</key><real>1.5</real><key>increment</key><real>0.05</real><key>defaults</key><string>com.minis.lockscreengradientclock</string></dict>
+		<dict><key>cell</key><string>PSSliderCell</string><key>label</key><string>时间垂直位置</string><key>key</key><string>clockOffsetY</string><key>default</key><real>0</real><key>min</key><real>-200</real><key>max</key><real>200</real><key>increment</key><real>1</real><key>defaults</key><string>com.minis.lockscreengradientclock</string></dict>
+		<dict><key>cell</key><string>PSSliderCell</string><key>label</key><string>时间水平位置</string><key>key</key><string>clockOffsetX</string><key>default</key><real>0</real><key>min</key><real>-100</real><key>max</key><real>100</real><key>increment</key><real>1</real><key>defaults</key><string>com.minis.lockscreengradientclock</string></dict>
 		<dict>
 			<key>cell</key><string>PSButtonCell</string>
 			<key>label</key><string>导入锁屏字体（TTF/OTF）</string>

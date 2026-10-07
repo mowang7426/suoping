@@ -82,6 +82,11 @@ static void LoadConfig(void) {
     // Standalone native lock-screen clock mode: no Liquidify object is required.
     values[@"dateGradient"]=@YES;
     values[@"clockScale"]=@2.35;
+    values[@"clockWidth"]=@1.0;
+    values[@"clockSpacing"]=@0.0;
+    values[@"clockColonScale"]=@1.0;
+    values[@"clockOffsetY"]=@0.0;
+    values[@"clockOffsetX"]=@0.0;
     values[@"fontName"]=@"";
     values[@"clockMode"]=@0;
     values[@"clockOpacity"]=@0.32;
@@ -261,6 +266,23 @@ static UIImage *SnapshotText(UILabel *label,CGFloat scale) {
         NSMutableAttributedString *text=[source mutableCopy]; NSRange all=NSMakeRange(0,text.length);
         [text addAttribute:NSForegroundColorAttributeName value:UIColor.whiteColor range:all];
         if (customFont) [text addAttribute:NSFontAttributeName value:customFont range:all];
+        if (clock) {
+            CGFloat spacing=Clamp([Config[@"clockSpacing"] doubleValue],-10,20);
+            if (fabs(spacing)>0.01) [text addAttribute:NSKernAttributeName value:@(spacing) range:all];
+            CGFloat colonScale=Clamp([Config[@"clockColonScale"] doubleValue],0.5,1.5);
+            if (fabs(colonScale-1.0)>0.01) {
+                NSString *string=text.string;
+                for (NSUInteger i=0;i<string.length;i++) {
+                    unichar ch=[string characterAtIndex:i];
+                    if (ch==':' || ch==0xFF1A || ch==0x2236) {
+                        NSRange r=NSMakeRange(i,1);
+                        UIFont *base=customFont ?: label.font;
+                        UIFont *colon=[UIFont fontWithDescriptor:base.fontDescriptor size:base.pointSize*colonScale];
+                        [text addAttribute:NSFontAttributeName value:colon range:r];
+                    }
+                }
+            }
+        }
         [text removeAttribute:NSBackgroundColorAttributeName range:all];
         [text removeAttribute:NSShadowAttributeName range:all];
         mirror.attributedText=text;
@@ -669,11 +691,12 @@ static void RemoveOverlay(UILabel *label) {
 }
 static NSString *DateSignature(UILabel *label) {
     NSString *fontName=[Config[@"fontName"] isKindOfClass:NSString.class]?Config[@"fontName"]:@"";
-    return [NSString stringWithFormat:@"date|%@|%@|%@|%ld|%ld|%ld|%d|%g|%ld|%@|%@",
+    return [NSString stringWithFormat:@"date|%@|%@|%@|%ld|%ld|%ld|%d|%g|%ld|%@|%@|%@|%@|%@|%@|%@|%@",
         label.attributedText ?: (id)label.text, label.font, NSStringFromCGRect(label.bounds),
         (long)label.numberOfLines,(long)label.textAlignment,(long)label.lineBreakMode,
         label.adjustsFontSizeToFitWidth,label.minimumScaleFactor,(long)label.baselineAdjustment,
-        fontName, IsStandaloneTimeLabel(label)?@"time":@"date"];
+        fontName, IsStandaloneTimeLabel(label)?@"time":@"date",
+        Config[@"clockScale"],Config[@"clockWidth"],Config[@"clockSpacing"],Config[@"clockColonScale"],Config[@"clockOffsetX"],Config[@"clockOffsetY"]];
 }
 static void Apply(UILabel *label) {
     if (!NSThread.isMainThread) return;
@@ -717,10 +740,13 @@ static void Apply(UILabel *label) {
                 // The reference uses an oversized clock. Keep the native time source,
                 // but enlarge only the cached overlay; no per-frame redraw is added.
                 CGFloat userScale=IsStandaloneTimeLabel(label) ? Clamp([Config[@"clockScale"] doubleValue],0.80,3.50) : 1.0;
-                CGFloat sx=frame.size.width/label.bounds.size.width*userScale;
+                CGFloat widthScale=IsStandaloneTimeLabel(label) ? Clamp([Config[@"clockWidth"] doubleValue],0.80,1.50) : 1.0;
+                CGFloat sx=frame.size.width/label.bounds.size.width*userScale*widthScale;
                 CGFloat sy=frame.size.height/label.bounds.size.height*userScale;
+                CGFloat offsetX=IsStandaloneTimeLabel(label) ? Clamp([Config[@"clockOffsetX"] doubleValue],-100,100) : 0;
+                CGFloat offsetY=IsStandaloneTimeLabel(label) ? Clamp([Config[@"clockOffsetY"] doubleValue],-200,200) : 0;
                 state.dateHost.bounds=(CGRect){CGPointZero,label.bounds.size};
-                state.dateHost.position=CGPointMake(CGRectGetMidX(frame),CGRectGetMidY(frame));
+                state.dateHost.position=CGPointMake(CGRectGetMidX(frame)+offsetX,CGRectGetMidY(frame)+offsetY);
                 state.dateHost.transform=CATransform3DMakeScale(sx,sy,1);
                 if (state.dateHost.superlayer!=dateParent.layer) [dateParent.layer addSublayer:state.dateHost];
                 UpdateParallax();
