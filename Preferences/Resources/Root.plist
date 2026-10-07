@@ -10,9 +10,9 @@
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>label</key>
-			<string>Liquidify 时钟融合</string>
+			<string>独立锁屏时间</string>
 			<key>footerText</key>
-			<string>仅为已安装的 Liquidify 玻璃时间添加渐变，不创建第二个时钟。字体、大小、玻璃折射继续在原插件中设置。</string>
+			<string>自己绘制并替换系统锁屏时间，不依赖 Liquidify。采用事件驱动更新，避免高频轮询和持续截图。</string>
 		</dict>
 		<dict>
 			<key>cell</key>
@@ -30,11 +30,11 @@
 			<key>cell</key>
 			<string>PSSwitchCell</string>
 			<key>label</key>
-			<string>日期与农历渐变</string>
+			<string>日期与农历渐变（可选）</string>
 			<key>key</key>
 			<string>dateGradient</string>
 			<key>default</key>
-			<false/>
+			<true/>
 			<key>defaults</key>
 			<string>com.minis.lockscreengradientclock</string>
 		</dict>

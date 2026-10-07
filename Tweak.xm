@@ -51,6 +51,9 @@ static void Discover(void);
 @property(nonatomic) NSUInteger ticket;
 @property(nonatomic) NSUInteger motionBits;
 @property(nonatomic) NSUInteger styleToken;
+@property(nonatomic) BOOL hidOriginalLabel;
+@property(nonatomic) CGFloat originalAlpha;
+@property(nonatomic) BOOL originalHidden;
 @end
 @implementation LSGCState
 - (void)dealloc { [_dateHost removeFromSuperlayer]; }
@@ -75,7 +78,8 @@ static CGFloat Clamp(CGFloat x, CGFloat lo, CGFloat hi) {
 static void LoadConfig(void) {
     CFPreferencesAppSynchronize((__bridge CFStringRef)Domain);
     NSMutableDictionary *values=[@{@"enabled":@YES,@"color1":@"#39D6ED",@"color2":@"#4D7CFF",@"color3":@"#AD4DF5",@"color4":@"#F950B0",@"color5":@"#FFBD61",@"direction":@0,@"opacity":@0.65,@"animate":@NO,@"strictScope":@YES,@"maskMode":@0,@"glassBlend":@YES,@"glassTint":@0.32,@"edgeEnabled":@NO,@"edgePalette":@0,@"edgeCore":@0.22,@"edgeStrength":@0.65,@"edgeWidth":@1.5,@"edgeHighlight":@0.35,@"edgeReveal":@NO,@"customAngleEnabled":@NO,@"gradientAngle":@0,@"customStopsEnabled":@NO,@"stop1":@0,@"stop2":@0.25,@"stop3":@0.5,@"stop4":@0.75,@"stop5":@1,@"reverseColors":@NO,@"independentEdges":@NO,@"edgeColor1":@"#D0FAFF",@"edgeColor2":@"#B39CFF",@"edgeColor3":@"#F7A9DD",@"timeShift":@NO,@"parallaxAngle":@NO,@"scheduleEnabled":@NO} mutableCopy];
-    values[@"dateGradient"]=@NO;
+    // Standalone native lock-screen clock mode: no Liquidify object is required.
+    values[@"dateGradient"]=@YES;
     for (NSString *key in values.allKeys) {
         id value=CFBridgingRelease(CFPreferencesCopyAppValue((__bridge CFStringRef)key,(__bridge CFStringRef)Domain));
         if (value) values[key]=value;
@@ -608,6 +612,11 @@ static void InstallMask(LSGCState *s,UIImage *image,BOOL native,CALayer *source,
 static void RemoveOverlay(UILabel *label) {
     LSGCState *s=objc_getAssociatedObject(label,&StateKey);
     if (!s) return;
+    if (s.hidOriginalLabel) {
+        label.alpha=s.originalAlpha;
+        label.hidden=s.originalHidden;
+        s.hidOriginalLabel=NO;
+    }
     s.ticket++; s.busy=NO; s.dirty=NO;
     [s.gradient removeFromSuperlayer]; [s.gradient removeAllAnimations];
     [s.dateHost removeFromSuperlayer];
@@ -626,7 +635,9 @@ static void Apply(UILabel *label) {
     BOOL isGlassLabel=GlassClass && [label isKindOfClass:GlassClass];
     UIView *dateParent=DateOverlayParent(label);
     if (!isGlassLabel && dateParent) {
-        if (![Config[@"enabled"] boolValue] || ![Config[@"dateGradient"] boolValue] || !Visible(dateParent) ||
+        NSString *displayText=label.text ?: label.attributedText.string;
+        BOOL allowDate=TimeText(displayText) || [Config[@"dateGradient"] boolValue];
+        if (![Config[@"enabled"] boolValue] || !allowDate || !Visible(dateParent) ||
             !(label.text.length || label.attributedText.length) || label.bounds.size.width<1 || label.bounds.size.height<1 ||
             label.bounds.size.width>2048 || label.bounds.size.height>2048) { RemoveOverlay(label); return; }
         LSGCState *state=objc_getAssociatedObject(label,&StateKey);
@@ -644,6 +655,13 @@ static void Apply(UILabel *label) {
                 @finally { Rendering=NO; }
                 if (!image) { RemoveOverlay(label); state.maskMode=@"日期遮罩为空"; return; }
                 InstallMask(state,image,NO,nil,state.dateHost,label);
+                // Replace the system glyph while preserving its layout and update path.
+                if (!state.hidOriginalLabel) {
+                    state.originalAlpha=label.alpha;
+                    state.originalHidden=label.hidden;
+                    state.hidOriginalLabel=YES;
+                    label.alpha=0.0;
+                }
                 state.signature=signature;
             }
             // Convert geometry through the source hierarchy on each layout tick.
@@ -663,8 +681,9 @@ static void Apply(UILabel *label) {
         }
         return;
     }
-    if (!isGlassLabel) { RemoveOverlay(label); return; }
-    BOOL scoped=![Config[@"strictScope"] boolValue] || InLockScreen(label);
+    // Standalone mode never touches Liquidify labels or their private masks.
+    RemoveOverlay(label);
+    return;
     if (![Config[@"enabled"] boolValue] || !Visible(label) || !GradientText(label.text ?: label.attributedText.string) ||
         !scoped || label.bounds.size.width<1 || label.bounds.size.height<1 ||
         label.bounds.size.width>2048 || label.bounds.size.height>2048) { RemoveOverlay(label); return; }
@@ -772,19 +791,9 @@ static void Hook(const char *name,IMP replacement,IMP *original,NSUInteger argum
     NoteHook(name,original && *original);
 }
 static void InstallHooks(void) {
+    // Standalone implementation: no Liquidify class lookup or private hook.
     InstallLabelHooks();
-    if (Hooked) return;
-    Class cls=NSClassFromString(@"CCLiquidGlassLabel");
-    if (!cls || ![cls isSubclassOfClass:UILabel.class]) return;
-    GlassClass=cls; HookReport=nil;
-    Hook("layoutSubviews",(IMP)Layout,(IMP *)&OrigLayout,2);
-    Hook("didMoveToWindow",(IMP)Move,(IMP *)&OrigMove,2);
-    Hook("setText:",(IMP)Text,(IMP *)&OrigText,3);
-    Hook("setAttributedText:",(IMP)Attributed,(IMP *)&OrigAttributed,3);
-    Hook("setFont:",(IMP)Font,(IMP *)&OrigFont,3);
-    Hook("setTextMaskLayer:",(IMP)Mask,(IMP *)&OrigMask,3);
-    Hook("setCachedBuildFinished:",(IMP)Finished,(IMP *)&OrigFinished,3);
-    Hooked=OrigLayout!=NULL;
+    if (!HookReport) HookReport=@"standalone-native-clock";
 }
 static void (*OrigLabelLayout)(id,SEL);
 static void (*OrigLabelMove)(id,SEL);
@@ -858,7 +867,7 @@ static void DiscoverAndApply(void) {
 }
 static void RetryDateDiscover(void) {
     LoadConfig();
-    if (![Config[@"dateGradient"] boolValue] || DateOverlayAttached()) return;
+    if (DateOverlayAttached()) return;
     DiscoverAndApply();
 }
 static void WriteDiagnostics(void) {
@@ -1075,16 +1084,8 @@ __attribute__((constructor)) static void Start(void) {
             for (NSNumber *delay in @[@0.4,@1.2,@3.0,@8.0]) {
                 dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(delay.doubleValue*NSEC_PER_SEC)),dispatch_get_main_queue(), ^{ RetryDateDiscover(); });
             }
-            // Low-frequency geometry maintenance; no repeated bitmap work unless signature changes.
-            NSTimer *timer=[NSTimer timerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *t) {
-                (void)t;
-                MaybeApplySchedule(NO);
-                for (UILabel *label in Labels.allObjects) {
-                    if (Visible(DateOverlayParent(label) ?: label)) Apply(label);
-                    else RemoveOverlay(label);
-                }
-            }];
-            [[NSRunLoop mainRunLoop] addTimer:timer forMode:NSRunLoopCommonModes];
+            // Event-driven only: system clock/layout hooks trigger updates.
+            // No polling timer or display link is installed in SpringBoard.
         });
     }
 }
