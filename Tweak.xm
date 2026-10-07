@@ -156,6 +156,12 @@ static BOOL IsProminentTimeView(NSString *name) {
     return [name isEqualToString:@"CSProminentTimeView"] ||
         [name containsString:@"ProminentTimeView"];
 }
+static BOOL IsStandaloneTimeLabel(UILabel *label) {
+    for (UIView *view=label; view; view=view.superview) {
+        if (IsProminentTimeView(NSStringFromClass(view.class))) return YES;
+    }
+    return NO;
+}
 static UIView *DateOverlayParent(UILabel *label) {
     BOOL subtitle=NO;
     UIView *dateView=nil;
@@ -233,7 +239,8 @@ static UIImage *SnapshotMask(CALayer *source,CGFloat scale) {
 static UIImage *SnapshotText(UILabel *label,CGFloat scale) {
     UILabel *mirror=[[UILabel alloc] initWithFrame:(CGRect){CGPointZero,label.bounds.size}];
     mirror.font=label.font;
-    NSString *fontName=[Config[@"fontName"] isKindOfClass:NSString.class]?Config[@"fontName"]:@"";
+    // Custom fonts are for the standalone time only; date/lunar text keeps iOS typography.
+    NSString *fontName=IsStandaloneTimeLabel(label) && [Config[@"fontName"] isKindOfClass:NSString.class] ? Config[@"fontName"] : @"";
     if (fontName.length) { UIFont *custom=[UIFont fontWithName:fontName size:label.font.pointSize]; if (custom) mirror.font=custom; } mirror.textColor=UIColor.whiteColor;
     mirror.textAlignment=label.textAlignment; mirror.numberOfLines=label.numberOfLines;
     mirror.lineBreakMode=label.lineBreakMode; mirror.adjustsFontSizeToFitWidth=label.adjustsFontSizeToFitWidth;
@@ -636,11 +643,12 @@ static void RemoveOverlay(UILabel *label) {
     s.signature=nil; s.revision=0;
 }
 static NSString *DateSignature(UILabel *label) {
-    return [NSString stringWithFormat:@"date|%@|%@|%@|%ld|%ld|%ld|%d|%g|%ld",
+    NSString *fontName=[Config[@"fontName"] isKindOfClass:NSString.class]?Config[@"fontName"]:@"";
+    return [NSString stringWithFormat:@"date|%@|%@|%@|%ld|%ld|%ld|%d|%g|%ld|%@|%@",
         label.attributedText ?: (id)label.text, label.font, NSStringFromCGRect(label.bounds),
         (long)label.numberOfLines,(long)label.textAlignment,(long)label.lineBreakMode,
-        label.adjustsFontSizeToFitWidth,label.minimumScaleFactor,(long)label.baselineAdjustment];
-}
+        label.adjustsFontSizeToFitWidth,label.minimumScaleFactor,(long)label.baselineAdjustment,
+        fontName, IsStandaloneTimeLabel(label)?@"time":@"date"];
 static void Apply(UILabel *label) {
     if (!NSThread.isMainThread) return;
     [Labels addObject:label];
@@ -682,7 +690,7 @@ static void Apply(UILabel *label) {
             @try {
                 // The reference uses an oversized clock. Keep the native time source,
                 // but enlarge only the cached overlay; no per-frame redraw is added.
-                CGFloat userScale=Clamp([Config[@"clockScale"] doubleValue],0.80,3.50);
+                CGFloat userScale=IsStandaloneTimeLabel(label) ? Clamp([Config[@"clockScale"] doubleValue],0.80,3.50) : 1.0;
                 CGFloat sx=frame.size.width/label.bounds.size.width*userScale;
                 CGFloat sy=frame.size.height/label.bounds.size.height*userScale;
                 state.dateHost.bounds=(CGRect){CGPointZero,label.bounds.size};
