@@ -149,11 +149,18 @@ static BOOL IsDateSubtitleView(NSString *name) {
 static BOOL IsVibrancyView(NSString *name) {
     return [name isEqualToString:@"BSUIVibrancyEffectView"] || [name hasSuffix:@"VibrancyEffectView"];
 }
+static BOOL IsProminentTimeView(NSString *name) {
+    return [name isEqualToString:@"CSProminentTimeView"] ||
+        [name containsString:@"ProminentTimeView"];
+}
 static UIView *DateOverlayParent(UILabel *label) {
     BOOL subtitle=NO;
     UIView *dateView=nil;
     for (UIView *view=label.superview;view;view=view.superview) {
         NSString *name=NSStringFromClass(view.class);
+        // iOS 17's actual clock is _UIAnimatingLabel inside CSProminentTimeView.
+        // Use that stable local container; do not depend on Liquidify.
+        if (IsProminentTimeView(name)) { subtitle=YES; dateView=view; }
         if (IsDateSubtitleView(name)) { subtitle=YES; dateView=view; }
         // Place color outside the monochrome vibrancy/portal composition.
         if (subtitle && IsVibrancyView(name)) return view.superview;
