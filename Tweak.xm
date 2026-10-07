@@ -759,38 +759,6 @@ static void Apply(UILabel *label) {
         });
     });
 }
-static void (*OrigLayout)(id,SEL);
-static void (*OrigMove)(id,SEL);
-static void (*OrigText)(id,SEL,id);
-static void (*OrigAttributed)(id,SEL,id);
-static void (*OrigFont)(id,SEL,id);
-static void (*OrigMask)(id,SEL,id);
-static void (*OrigFinished)(id,SEL,BOOL);
-static void Layout(id obj,SEL sel) { OrigLayout(obj,sel); Schedule(obj); }
-static void Move(id obj,SEL sel) { OrigMove(obj,sel); Schedule(obj); }
-static void Text(id obj,SEL sel,id value) { OrigText(obj,sel,value); Schedule(obj); }
-static void Attributed(id obj,SEL sel,id value) { OrigAttributed(obj,sel,value); Schedule(obj); }
-static void Font(id obj,SEL sel,id value) { OrigFont(obj,sel,value); Schedule(obj); }
-static void Mask(id obj,SEL sel,id value) {
-    OrigMask(obj,sel,value);
-    LSGCState *s=objc_getAssociatedObject(obj,&StateKey); s.signature=nil; Schedule(obj);
-}
-static void Finished(id obj,SEL sel,BOOL value) {
-    OrigFinished(obj,sel,value);
-    LSGCState *s=objc_getAssociatedObject(obj,&StateKey); s.signature=nil; Schedule(obj);
-}
-static void NoteHook(const char *name,BOOL ok) {
-    NSString *line=[NSString stringWithFormat:@"%s=%@",name,ok?@"是":@"否"];
-    HookReport=HookReport.length ? [HookReport stringByAppendingFormat:@" %@",line] : line;
-}
-static void Hook(const char *name,IMP replacement,IMP *original,NSUInteger arguments) {
-    SEL sel=sel_registerName(name); Method method=class_getInstanceMethod(GlassClass,sel);
-    if (!method || method_getNumberOfArguments(method)!=arguments) { NoteHook(name,NO); return; }
-    char ret[16]={0}; method_getReturnType(method,ret,sizeof(ret));
-    if (ret[0]!='v') { NoteHook(name,NO); return; }
-    MSHookMessageEx(GlassClass,sel,replacement,original);
-    NoteHook(name,original && *original);
-}
 static void InstallHooks(void) {
     // Standalone implementation: no Liquidify class lookup or private hook.
     InstallLabelHooks();
