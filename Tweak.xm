@@ -1,6 +1,7 @@
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
 #import <CoreFoundation/CoreFoundation.h>
+#import <CoreText/CoreText.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
 #import <mach-o/dyld.h>
@@ -80,6 +81,8 @@ static void LoadConfig(void) {
     NSMutableDictionary *values=[@{@"enabled":@YES,@"color1":@"#39D6ED",@"color2":@"#4D7CFF",@"color3":@"#AD4DF5",@"color4":@"#F950B0",@"color5":@"#FFBD61",@"direction":@0,@"opacity":@0.65,@"animate":@NO,@"strictScope":@YES,@"maskMode":@0,@"glassBlend":@YES,@"glassTint":@0.32,@"edgeEnabled":@NO,@"edgePalette":@0,@"edgeCore":@0.22,@"edgeStrength":@0.65,@"edgeWidth":@1.5,@"edgeHighlight":@0.35,@"edgeReveal":@NO,@"customAngleEnabled":@NO,@"gradientAngle":@0,@"customStopsEnabled":@NO,@"stop1":@0,@"stop2":@0.25,@"stop3":@0.5,@"stop4":@0.75,@"stop5":@1,@"reverseColors":@NO,@"independentEdges":@NO,@"edgeColor1":@"#D0FAFF",@"edgeColor2":@"#B39CFF",@"edgeColor3":@"#F7A9DD",@"timeShift":@NO,@"parallaxAngle":@NO,@"scheduleEnabled":@NO} mutableCopy];
     // Standalone native lock-screen clock mode: no Liquidify object is required.
     values[@"dateGradient"]=@YES;
+    values[@"clockScale"]=@2.35;
+    values[@"fontName"]=@"";
     for (NSString *key in values.allKeys) {
         id value=CFBridgingRelease(CFPreferencesCopyAppValue((__bridge CFStringRef)key,(__bridge CFStringRef)Domain));
         if (value) values[key]=value;
@@ -229,7 +232,9 @@ static UIImage *SnapshotMask(CALayer *source,CGFloat scale) {
 }
 static UIImage *SnapshotText(UILabel *label,CGFloat scale) {
     UILabel *mirror=[[UILabel alloc] initWithFrame:(CGRect){CGPointZero,label.bounds.size}];
-    mirror.font=label.font; mirror.textColor=UIColor.whiteColor;
+    mirror.font=label.font;
+    NSString *fontName=[Config[@"fontName"] isKindOfClass:NSString.class]?Config[@"fontName"]:@"";
+    if (fontName.length) { UIFont *custom=[UIFont fontWithName:fontName size:label.font.pointSize]; if (custom) mirror.font=custom; } mirror.textColor=UIColor.whiteColor;
     mirror.textAlignment=label.textAlignment; mirror.numberOfLines=label.numberOfLines;
     mirror.lineBreakMode=label.lineBreakMode; mirror.adjustsFontSizeToFitWidth=label.adjustsFontSizeToFitWidth;
     mirror.minimumScaleFactor=label.minimumScaleFactor; mirror.baselineAdjustment=label.baselineAdjustment;
@@ -677,9 +682,9 @@ static void Apply(UILabel *label) {
             @try {
                 // The reference uses an oversized clock. Keep the native time source,
                 // but enlarge only the cached overlay; no per-frame redraw is added.
-                static const CGFloat StandaloneClockScale = 2.35;
-                CGFloat sx=frame.size.width/label.bounds.size.width*StandaloneClockScale;
-                CGFloat sy=frame.size.height/label.bounds.size.height*StandaloneClockScale;
+                CGFloat userScale=Clamp([Config[@"clockScale"] doubleValue],0.80,3.50);
+                CGFloat sx=frame.size.width/label.bounds.size.width*userScale;
+                CGFloat sy=frame.size.height/label.bounds.size.height*userScale;
                 state.dateHost.bounds=(CGRect){CGPointZero,label.bounds.size};
                 state.dateHost.position=CGPointMake(CGRectGetMidX(frame),CGRectGetMidY(frame));
                 state.dateHost.transform=CATransform3DMakeScale(sx,sy,1);
@@ -1006,7 +1011,14 @@ static NSDictionary *PaletteValuesNamed(NSString *name) {
     }
     return nil;
 }
-static void MaybeApplySchedule(BOOL force) {
+static void RegisterUserFont(void) {
+    NSString *path=@"/var/mobile/Library/Application Support/LockScreenGradientClock/clock.ttf";
+    if (![[NSFileManager defaultManager] fileExistsAtPath:path]) path=@"/var/mobile/Library/Application Support/LockScreenGradientClock/clock.otf";
+    if (![[NSFileManager defaultManager] fileExistsAtPath:path]) path=@"/var/mobile/Library/Application Support/LockScreenGradientClock/clock.ttc";
+    if (![[NSFileManager defaultManager] fileExistsAtPath:path]) return;
+    CTFontManagerRegisterFontsForURL((__bridge CFURLRef)[NSURL fileURLWithPath:path],kCTFontManagerScopeUser,NULL);
+}
+
     if (![Config[@"scheduleEnabled"] boolValue]) return;
     CFTimeInterval now=CACurrentMediaTime();
     if (!force && ScheduleStamp>0 && now-ScheduleStamp<20) return;
@@ -1047,7 +1059,7 @@ __attribute__((constructor)) static void Start(void) {
     @autoreleasepool {
         if (![NSBundle.mainBundle.bundleIdentifier isEqualToString:@"com.apple.springboard"]) return;
         dispatch_async(dispatch_get_main_queue(), ^{
-            Labels=[NSHashTable weakObjectsHashTable]; DateViews=[NSHashTable weakObjectsHashTable]; LoadConfig();
+            Labels=[NSHashTable weakObjectsHashTable]; DateViews=[NSHashTable weakObjectsHashTable]; LoadConfig(); RegisterUserFont();
             CFNotificationCenterRef center=CFNotificationCenterGetDarwinNotifyCenter();
             CFNotificationCenterAddObserver(center,NULL,Notification,Changed,NULL,CFNotificationSuspensionBehaviorDeliverImmediately);
             CFNotificationCenterAddObserver(center,NULL,Notification,Diagnose,NULL,CFNotificationSuspensionBehaviorDeliverImmediately);

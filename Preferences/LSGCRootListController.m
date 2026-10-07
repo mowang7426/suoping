@@ -4,6 +4,7 @@
 #import <CoreFoundation/CoreFoundation.h>
 #import <math.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
+#import <CoreText/CoreText.h>
 #import "../LSGCVersion.h"
 #import "../LSGCGradientMath.h"
 
@@ -619,8 +620,32 @@ static UIColor *LSGCHexColor(NSString *hex) {
     picker.delegate=(id<UIDocumentPickerDelegate>)self; picker.allowsMultipleSelection=NO;
     [self presentViewController:picker animated:YES completion:nil];
 }
+- (void)chooseFont {
+    UIDocumentPickerViewController *picker=[[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[UTTypeFont] asCopy:YES];
+    picker.delegate=(id<UIDocumentPickerDelegate>)self; picker.allowsMultipleSelection=NO;
+    [self presentViewController:picker animated:YES completion:nil];
+}
 - (void)documentPicker:(UIDocumentPickerViewController *)controller didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
-    (void)controller; NSURL *url=urls.firstObject; if (!url) return;
+    NSURL *url=urls.firstObject; if (!url) return;
+    if ([url.pathExtension.lowercaseString isEqualToString:@"ttf"] || [url.pathExtension.lowercaseString isEqualToString:@"otf"] || [url.pathExtension.lowercaseString isEqualToString:@"ttc"]) {
+        BOOL access=[url startAccessingSecurityScopedResource]; NSError *error=nil;
+        NSString *dir=@"/var/mobile/Library/Application Support/LockScreenGradientClock";
+        [[NSFileManager defaultManager] createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:&error];
+        NSString *dst=[dir stringByAppendingPathComponent:[NSString stringWithFormat:@"clock.%@",url.pathExtension.lowercaseString]];
+        NSData *font=[NSData dataWithContentsOfURL:url options:NSDataReadingMappedIfSafe error:&error];
+        if (access) [url stopAccessingSecurityScopedResource];
+        if (!font || error || ![font writeToFile:dst options:NSDataWritingAtomic error:&error]) { [self paletteMessage:@"字体导入失败。"] ; return; }
+        NSURL *local=[NSURL fileURLWithPath:dst]; CFErrorRef regError=NULL;
+        CTFontManagerRegisterFontsForURL((__bridge CFURLRef)local,kCTFontManagerScopeUser,&regError);
+        NSArray *descs=CFBridgingRelease(CTFontManagerCreateFontDescriptorsFromURL((__bridge CFURLRef)local));
+        NSString *postscript=nil; if (descs.count) postscript=CFBridgingRelease(CTFontDescriptorCopyAttribute((__bridge CTFontDescriptorRef)descs.firstObject,kCTFontNameAttribute));
+        if (regError) CFRelease(regError);
+        if (postscript.length) { [self save:postscript key:@"fontName"]; [self paletteMessage:[NSString stringWithFormat:@"字体已导入：%@",postscript]]; }
+        else [self paletteMessage:@"字体已复制，但无法读取字体名称。"];
+        return;
+    }
+    (void)controller;
+
     BOOL access=[url startAccessingSecurityScopedResource]; NSError *error=nil;
     NSFileHandle *handle=[NSFileHandle fileHandleForReadingFromURL:url error:&error];
     NSData *data=[handle readDataUpToLength:262145 error:&error]; [handle closeFile];
