@@ -244,20 +244,23 @@ static UIImage *SnapshotMask(CALayer *source,CGFloat scale) {
     return HasAlpha(image) ? image : nil;
 }
 static UIImage *SnapshotText(UILabel *label,CGFloat scale) {
+    BOOL clock=IsStandaloneTimeLabel(label);
+    NSString *fontName=clock && [Config[@"fontName"] isKindOfClass:NSString.class] ? Config[@"fontName"] : @"";
+    UIFont *customFont=nil;
+    if (fontName.length) customFont=[UIFont fontWithName:fontName size:label.font.pointSize];
     UILabel *mirror=[[UILabel alloc] initWithFrame:(CGRect){CGPointZero,label.bounds.size}];
-    mirror.font=label.font;
-    // Custom fonts are for the standalone time only; date/lunar text keeps iOS typography.
-    NSString *fontName=IsStandaloneTimeLabel(label) && [Config[@"fontName"] isKindOfClass:NSString.class] ? Config[@"fontName"] : @"";
-    if (fontName.length) { UIFont *custom=[UIFont fontWithName:fontName size:label.font.pointSize]; if (custom) mirror.font=custom; } mirror.textColor=UIColor.whiteColor;
+    mirror.font=customFont ?: label.font;
+    mirror.textColor=UIColor.whiteColor;
     mirror.textAlignment=label.textAlignment; mirror.numberOfLines=label.numberOfLines;
     mirror.lineBreakMode=label.lineBreakMode; mirror.adjustsFontSizeToFitWidth=label.adjustsFontSizeToFitWidth;
     mirror.minimumScaleFactor=label.minimumScaleFactor; mirror.baselineAdjustment=label.baselineAdjustment;
-    // Use the displayed label's attributes, not Liquidify's private mask-canvas offsets.
+    // Replace the font attribute too; attributedText otherwise overrides mirror.font.
     NSAttributedString *source=label.attributedText;
     if (![source isKindOfClass:NSAttributedString.class]) source=nil;
     if (source.length) {
         NSMutableAttributedString *text=[source mutableCopy]; NSRange all=NSMakeRange(0,text.length);
         [text addAttribute:NSForegroundColorAttributeName value:UIColor.whiteColor range:all];
+        if (customFont) [text addAttribute:NSFontAttributeName value:customFont range:all];
         [text removeAttribute:NSBackgroundColorAttributeName range:all];
         [text removeAttribute:NSShadowAttributeName range:all];
         mirror.attributedText=text;
