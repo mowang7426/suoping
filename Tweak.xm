@@ -83,6 +83,13 @@ static void LoadConfig(void) {
     values[@"dateGradient"]=@YES;
     values[@"clockScale"]=@2.35;
     values[@"fontName"]=@"";
+    values[@"clockMode"]=@0;
+    values[@"clockOpacity"]=@0.32;
+    values[@"clockColor"]=@"#FFFFFF";
+    values[@"clockColor1"]=@"#FC7BE6";
+    values[@"clockColor2"]=@"#6FB9FF";
+    values[@"clockColor3"]=@"#5DF5C4";
+    values[@"clockColor4"]=@"#FFE168";
     for (NSString *key in values.allKeys) {
         id value=CFBridgingRelease(CFPreferencesCopyAppValue((__bridge CFStringRef)key,(__bridge CFStringRef)Domain));
         if (value) values[key]=value;
@@ -548,15 +555,15 @@ static UIColor *ShiftedColor(UIColor *color,double hue) {
 static void ApplyStyle(UILabel *label,LSGCState *s,CALayer *host,NSUInteger motionBits) {
     NSUInteger token=StyleToken(motionBits);
     BOOL styleDirty=s.styleToken!=token || s.motionBits!=motionBits;
+    BOOL standaloneTime=IsStandaloneTimeLabel(label);
     BOOL glass=[Config[@"glassBlend"] boolValue] && (motionBits&8)==0;
     BOOL quiet=(motionBits&7)!=0;
     s.motionBits=motionBits; s.styleToken=token;
     [CATransaction begin]; [CATransaction setDisableActions:YES];
     s.gradient.bounds=(CGRect){CGPointZero,host.bounds.size};
     s.gradient.position=CGPointMake(CGRectGetMidX(host.bounds),CGRectGetMidY(host.bounds));
-    s.gradient.opacity=glass ? Clamp([Config[@"glassTint"] doubleValue],0,0.65) : Clamp([Config[@"opacity"] doubleValue],0,1);
-    // Native date text needs a full-color fill over the original monochrome glyphs.
-    if (s.dateHost) s.gradient.opacity=1;
+    s.gradient.opacity=standaloneTime ? Clamp([Config[@"clockOpacity"] doubleValue],0,1) : (glass ? Clamp([Config[@"glassTint"] doubleValue],0,0.65) : Clamp([Config[@"opacity"] doubleValue],0,1));
+    if (s.dateHost && !standaloneTime) s.gradient.opacity=1;
     if ([Config[@"edgeEnabled"] boolValue] && s.edgeHost)
         s.gradient.opacity *= Clamp([Config[@"edgeCore"] doubleValue],0,1);
     if (motionBits&4) s.gradient.opacity*=0.4;
@@ -582,11 +589,26 @@ static void ApplyStyle(UILabel *label,LSGCState *s,CALayer *host,NSUInteger moti
             hue=LSGCHueForHour(parts.hour+parts.minute/60.0);
         }
         NSMutableArray *colors=[NSMutableArray array];
-        for (NSUInteger i=0;i<5;i++) {
-            NSString *key=[NSString stringWithFormat:@"color%lu",(unsigned long)i+1];
-            UIColor *c=Color(Config[key],Color(defaults[i],UIColor.whiteColor));
-            if (hue!=0) c=ShiftedColor(c,hue);
-            [colors addObject:(__bridge id)c.CGColor];
+        if (standaloneTime && [Config[@"clockMode"] integerValue]==1) {
+            UIColor *solid=Color(Config[@"clockColor"],UIColor.whiteColor);
+            [colors addObject:(__bridge id)solid.CGColor];
+            [colors addObject:(__bridge id)solid.CGColor];
+            [colors addObject:(__bridge id)solid.CGColor];
+            [colors addObject:(__bridge id)solid.CGColor];
+            [colors addObject:(__bridge id)solid.CGColor];
+        } else if (standaloneTime) {
+            for (NSUInteger i=0;i<4;i++) {
+                UIColor *c=Color(Config[[NSString stringWithFormat:@"clockColor%lu",(unsigned long)i+1]],UIColor.whiteColor);
+                [colors addObject:(__bridge id)c.CGColor];
+            }
+            [colors addObject:colors.lastObject];
+        } else {
+            for (NSUInteger i=0;i<5;i++) {
+                NSString *key=[NSString stringWithFormat:@"color%lu",(unsigned long)i+1];
+                UIColor *c=Color(Config[key],Color(defaults[i],UIColor.whiteColor));
+                if (hue!=0) c=ShiftedColor(c,hue);
+                [colors addObject:(__bridge id)c.CGColor];
+            }
         }
         if ([Config[@"reverseColors"] boolValue]) colors=[[[colors reverseObjectEnumerator] allObjects] mutableCopy];
         s.gradient.colors=colors; s.gradient.locations=@[@0,@0.25,@0.5,@0.75,@1];

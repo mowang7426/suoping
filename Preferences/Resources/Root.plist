@@ -39,6 +39,18 @@
 			<string>com.minis.lockscreengradientclock</string>
 		</dict>
 		<dict>
+			<key>cell</key><string>PSGroupCell</string>
+			<key>label</key><string>液态玻璃时间样式</string>
+			<key>footerText</key><string>独立实现 Liquidify 锁屏时间的玻璃、纯色和四色渐变形式；不依赖 Liquidify。玻璃折射为轻量近似效果，优先保证 SpringBoard 流畅。</string>
+		</dict>
+		<dict><key>cell</key><string>PSMultiValueCell</string><key>label</key><string>时间渲染方式</string><key>key</key><string>clockMode</string><key>default</key><integer>0</integer><key>validTitles</key><array><string>液态玻璃</string><string>纯色</string><string>四色渐变</string></array><key>validValues</key><array><integer>0</integer><integer>1</integer><integer>2</integer></array><key>defaults</key><string>com.minis.lockscreengradientclock</string></dict>
+		<dict><key>cell</key><string>PSSliderCell</string><key>label</key><string>时间颜色透明度</string><key>key</key><string>clockOpacity</string><key>default</key><real>0.32</real><key>min</key><real>0</real><key>max</key><real>0.65</real><key>showValue</key><true/><key>defaults</key><string>com.minis.lockscreengradientclock</string></dict>
+		<dict><key>cell</key><string>PSButtonCell</string><key>label</key><string>时间纯色</string><key>key</key><string>clockColor</string><key>default</key><string>#FFFFFF</string><key>action</key><string>chooseColor:</string><key>defaults</key><string>com.minis.lockscreengradientclock</string></dict>
+		<dict><key>cell</key><string>PSButtonCell</string><key>label</key><string>时间渐变 1 · 粉</string><key>key</key><string>clockColor1</string><key>default</key><string>#FC7BE6</string><key>action</key><string>chooseColor:</string><key>defaults</key><string>com.minis.lockscreengradientclock</string></dict>
+		<dict><key>cell</key><string>PSButtonCell</string><key>label</key><string>时间渐变 2 · 蓝</string><key>key</key><string>clockColor2</string><key>default</key><string>#6FB9FF</string><key>action</key><string>chooseColor:</string><key>defaults</key><string>com.minis.lockscreengradientclock</string></dict>
+		<dict><key>cell</key><string>PSButtonCell</string><key>label</key><string>时间渐变 3 · 绿</string><key>key</key><string>clockColor3</string><key>default</key><string>#5DF5C4</string><key>action</key><string>chooseColor:</string><key>defaults</key><string>com.minis.lockscreengradientclock</string></dict>
+		<dict><key>cell</key><string>PSButtonCell</string><key>label</key><string>时间渐变 4 · 黄</string><key>key</key><string>clockColor4</string><key>default</key><string>#FFE168</string><key>action</key><string>chooseColor:</string><key>defaults</key><string>com.minis.lockscreengradientclock</string></dict>
+		<dict>
 			<key>cell</key><string>PSSliderCell</string>
 			<key>label</key><string>时间大小</string>
 			<key>key</key><string>clockScale</string>
