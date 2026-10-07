@@ -649,6 +649,7 @@ static NSString *DateSignature(UILabel *label) {
         (long)label.numberOfLines,(long)label.textAlignment,(long)label.lineBreakMode,
         label.adjustsFontSizeToFitWidth,label.minimumScaleFactor,(long)label.baselineAdjustment,
         fontName, IsStandaloneTimeLabel(label)?@"time":@"date"];
+}
 static void Apply(UILabel *label) {
     if (!NSThread.isMainThread) return;
     [Labels addObject:label];
