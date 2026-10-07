@@ -1018,8 +1018,7 @@ static void RegisterUserFont(void) {
     if (![[NSFileManager defaultManager] fileExistsAtPath:path]) return;
     CTFontManagerRegisterFontsForURL((__bridge CFURLRef)[NSURL fileURLWithPath:path],kCTFontManagerScopeUser,NULL);
 }
-
-    if (![Config[@"scheduleEnabled"] boolValue]) return;
+static void MaybeApplySchedule(BOOL force) {
     CFTimeInterval now=CACurrentMediaTime();
     if (!force && ScheduleStamp>0 && now-ScheduleStamp<20) return;
     ScheduleStamp=now;
