@@ -10,6 +10,7 @@
 #import "LSGCGradientMath.h"
 #import "LSGCPalette.h"
 #import "LSGCVersion.h"
+#import "LSGCFont.h"
 
 // An optional companion: never patch, replace or distribute Liquidify binaries.
 extern "C" void MSHookMessageEx(Class, SEL, IMP, IMP *);
@@ -35,6 +36,11 @@ static void Apply(UILabel *label);
 static void InstallHooks(void);
 static void InstallLabelHooks(void);
 static void Discover(void);
+static void RegisterUserFont(void);
+static void InstallClockHooks(void);
+static UIFont *ImportedFont;
+static NSString *ImportedPath;
+static NSString *FontStatus;
 
 @interface LSGCState : NSObject
 @property(nonatomic,strong) CAGradientLayer *gradient;
@@ -89,6 +95,8 @@ static void LoadConfig(void) {
     values[@"clockOffsetX"]=@0.0;
     values[@"clockHeight"]=@1.0;
     values[@"fontName"]=@"";
+    values[@"fontPath"]=@"";
+    values[@"fontFamily"]=@"";
     values[@"clockMode"]=@0;
     values[@"clockOpacity"]=@0.32;
     values[@"clockColor"]=@"#FFFFFF";
@@ -100,7 +108,7 @@ static void LoadConfig(void) {
         id value=CFBridgingRelease(CFPreferencesCopyAppValue((__bridge CFStringRef)key,(__bridge CFStringRef)Domain));
         if (value) values[key]=value;
     }
-    Config=values; Revision++;
+    Config=values; Revision++; RegisterUserFont();
 }
 static UIColor *Color(id input, UIColor *fallback) {
     if (![input isKindOfClass:NSString.class]) return fallback;
@@ -176,6 +184,10 @@ static BOOL IsStandaloneTimeLabel(UILabel *label) {
     return NO;
 }
 static UIView *DateOverlayParent(UILabel *label) {
+    // A sibling of the actual time label inherits every native ancestor
+    // transform/animation (notification reflow, swipe and clock shrink).
+    // Do not move time out of its animated hierarchy as we do for date vibrancy.
+    if (IsStandaloneTimeLabel(label)) return label.superview;
     BOOL subtitle=NO;
     UIView *dateView=nil;
     for (UIView *view=label.superview;view;view=view.superview) {
@@ -253,8 +265,12 @@ static UIImage *SnapshotText(UILabel *label,CGFloat scale) {
     BOOL clock=IsStandaloneTimeLabel(label);
     NSString *fontName=clock && [Config[@"fontName"] isKindOfClass:NSString.class] ? Config[@"fontName"] : @"";
     UIFont *customFont=nil;
-    if (fontName.length) customFont=[UIFont fontWithName:fontName size:label.font.pointSize];
+    if (clock && ImportedFont && fontName.length) customFont=[ImportedFont fontWithSize:label.font.pointSize];
+    else if (fontName.length) customFont=[UIFont fontWithName:fontName size:label.font.pointSize];
     UILabel *mirror=[[UILabel alloc] initWithFrame:(CGRect){CGPointZero,label.bounds.size}];
+    mirror.contentScaleFactor=MAX(1,scale);
+    mirror.layer.contentsScale=MAX(1,scale);
+    mirror.layer.shouldRasterize=NO;
     mirror.font=customFont ?: label.font;
     mirror.textColor=UIColor.whiteColor;
     mirror.textAlignment=label.textAlignment; mirror.numberOfLines=label.numberOfLines;
@@ -690,14 +706,27 @@ static void RemoveOverlay(UILabel *label) {
     ClearEdges(s);
     s.signature=nil; s.revision=0;
 }
+// Render at the final clock magnification, not native label resolution.
+// Cap each dimension and total pixels; no bitmap work for position/transform updates.
+static CGFloat TextMaskScale(UILabel *label) {
+    if (!IsStandaloneTimeLabel(label)) return MaskScale(label.bounds.size);
+    CGFloat zoom=Clamp([Config[@"clockScale"] doubleValue],0.80,3.50);
+    CGFloat width=Clamp([Config[@"clockWidth"] doubleValue],0.80,1.50);
+    CGFloat height=Clamp([Config[@"clockHeight"] doubleValue],0.50,4.00);
+    CGSize size=label.bounds.size;
+    CGFloat desired=UIScreen.mainScreen.scale*zoom*MAX(width,height);
+    CGFloat budget=sqrt((4096.0*2048.0)/MAX(1,size.width*size.height));
+    return MAX(1,MIN(desired,MIN(budget,4096.0/MAX(size.width,size.height))));
+}
 static NSString *DateSignature(UILabel *label) {
-    NSString *fontName=[Config[@"fontName"] isKindOfClass:NSString.class]?Config[@"fontName"]:@"";
-    return [NSString stringWithFormat:@"date|%@|%@|%@|%ld|%ld|%ld|%d|%g|%ld|%@|%@|%@|%@|%@|%@|%@|%@|%@",
-        label.attributedText ?: (id)label.text, label.font, NSStringFromCGRect(label.bounds),
+    // Date/lunar signatures never contain user clock settings.
+    NSString *base=[NSString stringWithFormat:@"%@|%@|%@|%ld|%ld|%ld|%d|%g|%ld",
+        label.attributedText ?: (id)label.text,label.font,NSStringFromCGSize(label.bounds.size),
         (long)label.numberOfLines,(long)label.textAlignment,(long)label.lineBreakMode,
-        label.adjustsFontSizeToFitWidth,label.minimumScaleFactor,(long)label.baselineAdjustment,
-        fontName, IsStandaloneTimeLabel(label)?@"time":@"date",
-        Config[@"clockSpacing"],Config[@"clockColonScale"],Config[@"clockScale"],Config[@"clockWidth"],Config[@"clockHeight"],Config[@"clockOffsetX"],Config[@"clockOffsetY"]];
+        label.adjustsFontSizeToFitWidth,label.minimumScaleFactor,(long)label.baselineAdjustment];
+    if (!IsStandaloneTimeLabel(label)) return base;
+    return [base stringByAppendingFormat:@"|%@|%@|%@|%@|%.4f",
+        Config[@"fontName"],Config[@"fontPath"],Config[@"clockSpacing"],Config[@"clockColonScale"],TextMaskScale(label)];
 }
 static void Apply(UILabel *label) {
     if (!NSThread.isMainThread) return;
@@ -721,7 +750,7 @@ static void Apply(UILabel *label) {
         @try {
             if (![state.signature isEqualToString:signature]) {
                 UIImage *image=nil;
-                @try { Rendering=YES; image=SnapshotText(label,MaskScale(label.bounds.size)); }
+                @try { Rendering=YES; image=SnapshotText(label,TextMaskScale(label)); }
                 @finally { Rendering=NO; }
                 if (!image) { RemoveOverlay(label); state.maskMode=@"日期遮罩为空"; return; }
                 InstallMask(state,image,NO,nil,state.dateHost,label);
@@ -750,6 +779,13 @@ static void Apply(UILabel *label) {
                 state.dateHost.bounds=(CGRect){CGPointZero,label.bounds.size};
                 state.dateHost.position=CGPointMake(CGRectGetMidX(frame)+offsetX,CGRectGetMidY(frame)+offsetY);
                 state.dateHost.transform=CATransform3DMakeScale(sx,sy,1);
+                if (IsStandaloneTimeLabel(label)) {
+                    // Exact sibling geometry avoids convertRect's bounding-box loss.
+                    state.dateHost.bounds=label.layer.bounds;
+                    state.dateHost.anchorPoint=label.layer.anchorPoint;
+                    state.dateHost.position=CGPointMake(label.layer.position.x+offsetX,label.layer.position.y+offsetY);
+                    state.dateHost.transform=CATransform3DScale(label.layer.transform,userScale*widthScale,userScale*heightScale,1);
+                }
                 if (state.dateHost.superlayer!=dateParent.layer) [dateParent.layer addSublayer:state.dateHost];
                 UpdateParallax();
                 ApplyStyle(label,state,state.dateHost,MotionBits(dateParent)|8);
@@ -840,7 +876,7 @@ static void Apply(UILabel *label) {
 }
 static void InstallHooks(void) {
     // Standalone implementation: no Liquidify class lookup or private hook.
-    InstallLabelHooks();
+    InstallLabelHooks(); InstallClockHooks();
     if (!HookReport) HookReport=@"standalone-native-clock";
 }
 static void (*OrigLabelLayout)(id,SEL);
@@ -872,6 +908,55 @@ static void InstallLabelHooks(void) {
     MSHookMessageEx(cls,@selector(setText:),(IMP)LabelText,(IMP *)&OrigLabelText);
     MSHookMessageEx(cls,@selector(setAttributedText:),(IMP)LabelAttributed,(IMP *)&OrigLabelAttributed);
     LabelHooked=OrigLabelLayout && OrigLabelMove && OrigLabelText && OrigLabelAttributed;
+}
+// Hook overrides as well as UILabel: private animating labels need not call super.
+// One block/original IMP per class/selector avoids inherited-hook recursion.
+static void InstallClockHooks(void) {
+    static NSMutableSet<NSString *> *installed;
+    if (!installed) installed=[NSMutableSet set];
+    for (NSString *name in @[@"CSProminentTimeView",@"CSProminentDisplayView",@"_UIAnimatingLabel"]) {
+        Class cls=NSClassFromString(name);
+        if (!cls) continue;
+        BOOL labelClass=[cls isSubclassOfClass:UILabel.class];
+        NSArray *selectors=labelClass ? @[@"layoutSubviews",@"didMoveToWindow",@"setText:",@"setAttributedText:",@"setFont:",@"setTransform:",@"setBounds:",@"setCenter:"] : @[@"layoutSubviews",@"didMoveToWindow"];
+        for (NSString *method in selectors) {
+            NSString *key=[name stringByAppendingFormat:@"/%@",method];
+            SEL sel=NSSelectorFromString(method);
+            if ([installed containsObject:key] || !class_getInstanceMethod(cls,sel)) continue;
+            __block IMP original=NULL;
+            void (^refresh)(id)=^(id obj) {
+                if (Rendering || !NSThread.isMainThread) return;
+                if (labelClass) { Schedule((UILabel *)obj); return; }
+                // Only our known clock labels. No window traversal or polling.
+                for (UILabel *label in Labels.allObjects)
+                    if (IsStandaloneTimeLabel(label) && [label isDescendantOfView:(UIView *)obj]) Schedule(label);
+            };
+            IMP hook;
+            if ([method isEqualToString:@"setTransform:"]) {
+                hook=imp_implementationWithBlock(^(id obj,CGAffineTransform value) {
+                    ((void(*)(id,SEL,CGAffineTransform))original)(obj,sel,value); refresh(obj);
+                });
+            } else if ([method isEqualToString:@"setBounds:"]) {
+                hook=imp_implementationWithBlock(^(id obj,CGRect value) {
+                    ((void(*)(id,SEL,CGRect))original)(obj,sel,value); refresh(obj);
+                });
+            } else if ([method isEqualToString:@"setCenter:"]) {
+                hook=imp_implementationWithBlock(^(id obj,CGPoint value) {
+                    ((void(*)(id,SEL,CGPoint))original)(obj,sel,value); refresh(obj);
+                });
+            } else if ([method hasSuffix:@":"]) {
+                hook=imp_implementationWithBlock(^(id obj,id value) {
+                    ((void(*)(id,SEL,id))original)(obj,sel,value); refresh(obj);
+                });
+            } else {
+                hook=imp_implementationWithBlock(^(id obj) {
+                    ((void(*)(id,SEL))original)(obj,sel); refresh(obj);
+                });
+            }
+            MSHookMessageEx(cls,sel,hook,&original);
+            if (original) [installed addObject:key];
+        }
+    }
 }
 static BOOL IsDateCandidate(UILabel *label) {
     if (![Config[@"dateGradient"] boolValue]) return NO;
@@ -963,6 +1048,7 @@ static void WriteDiagnostics(void) {
     report=[report stringByAppendingFormat:@"\n\n日期开关：%@\nUILabel Hook：%@\n日期标签：%lu\n日期渐变已附加：%lu\n%@\n日期控件树（仅类名与几何）：\n%@",
         [Config[@"dateGradient"] boolValue]?@"开":@"关",LabelHooked?@"是":@"否",(unsigned long)dates,(unsigned long)dateActive,
         [dateDetails componentsJoinedByString:@"\n"],[tree componentsJoinedByString:@"\n"]];
+    report=[report stringByAppendingFormat:@"\n时间字体：%@",FontStatus?:@"未加载"];
     CFPreferencesSetAppValue(CFSTR("diagnosticReport"),(__bridge CFStringRef)report,(__bridge CFStringRef)Domain);
     CFPreferencesAppSynchronize((__bridge CFStringRef)Domain);
     CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),Replied,NULL,NULL,true);
@@ -1074,11 +1160,25 @@ static NSDictionary *PaletteValuesNamed(NSString *name) {
     return nil;
 }
 static void RegisterUserFont(void) {
-    NSString *path=@"/var/mobile/Library/Application Support/LockScreenGradientClock/clock.ttf";
-    if (![[NSFileManager defaultManager] fileExistsAtPath:path]) path=@"/var/mobile/Library/Application Support/LockScreenGradientClock/clock.otf";
-    if (![[NSFileManager defaultManager] fileExistsAtPath:path]) path=@"/var/mobile/Library/Application Support/LockScreenGradientClock/clock.ttc";
-    if (![[NSFileManager defaultManager] fileExistsAtPath:path]) return;
-    CTFontManagerRegisterFontsForURL((__bridge CFURLRef)[NSURL fileURLWithPath:path],kCTFontManagerScopeUser,NULL);
+    NSString *path=[Config[@"fontPath"] isKindOfClass:NSString.class] ? Config[@"fontPath"] : nil;
+    NSString *name=[Config[@"fontName"] isKindOfClass:NSString.class] ? Config[@"fontName"] : nil;
+    if (!path.length && name.length) {
+        // Migrate legacy imports by matching the selected face, not extension order.
+        for (NSString *ext in @[@"ttf",@"otf",@"ttc"]) {
+            NSString *candidate=[@"/var/mobile/Library/Application Support/LockScreenGradientClock/clock." stringByAppendingString:ext];
+            if (LSGCFontAtURL([NSURL fileURLWithPath:candidate],name,12,NULL,NULL)) { path=candidate; break; }
+        }
+    }
+    NSString *identity=[NSString stringWithFormat:@"%@|%@",path?:@"",name?:@""];
+    static NSString *loaded;
+    if ([loaded isEqualToString:identity]) return;
+    if (ImportedPath) CTFontManagerUnregisterFontsForURL((__bridge CFURLRef)[NSURL fileURLWithPath:ImportedPath],kCTFontManagerScopeProcess,NULL);
+    ImportedFont=nil; ImportedPath=nil; loaded=identity;
+    if (path.length && name.length) {
+        ImportedFont=LSGCFontAtURL([NSURL fileURLWithPath:path],name,12,NULL,NULL);
+        if (ImportedFont) ImportedPath=path;
+    }
+    FontStatus=ImportedFont ? [@"生效：" stringByAppendingString:ImportedFont.fontName] : (name.length ? @"导入字体不可用，使用系统字体" : @"系统字体");
 }
 static void MaybeApplySchedule(BOOL force) {
     CFTimeInterval now=CACurrentMediaTime();
@@ -1120,7 +1220,7 @@ __attribute__((constructor)) static void Start(void) {
     @autoreleasepool {
         if (![NSBundle.mainBundle.bundleIdentifier isEqualToString:@"com.apple.springboard"]) return;
         dispatch_async(dispatch_get_main_queue(), ^{
-            Labels=[NSHashTable weakObjectsHashTable]; DateViews=[NSHashTable weakObjectsHashTable]; LoadConfig(); RegisterUserFont();
+            Labels=[NSHashTable weakObjectsHashTable]; DateViews=[NSHashTable weakObjectsHashTable]; LoadConfig();
             CFNotificationCenterRef center=CFNotificationCenterGetDarwinNotifyCenter();
             CFNotificationCenterAddObserver(center,NULL,Notification,Changed,NULL,CFNotificationSuspensionBehaviorDeliverImmediately);
             CFNotificationCenterAddObserver(center,NULL,Notification,Diagnose,NULL,CFNotificationSuspensionBehaviorDeliverImmediately);

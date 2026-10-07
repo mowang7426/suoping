@@ -1,3 +1,4 @@
+#import "../LSGCFont.h"
 #import <Preferences/PSListController.h>
 #import <Preferences/PSSpecifier.h>
 #import <UIKit/UIKit.h>
@@ -709,17 +710,23 @@ static UIColor *LSGCHexColor(NSString *hex) {
         BOOL access=[url startAccessingSecurityScopedResource]; NSError *error=nil;
         NSString *dir=@"/var/mobile/Library/Application Support/LockScreenGradientClock";
         [[NSFileManager defaultManager] createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:&error];
-        NSString *dst=[dir stringByAppendingPathComponent:[NSString stringWithFormat:@"clock.%@",url.pathExtension.lowercaseString]];
+        NSString *dst=[dir stringByAppendingPathComponent:[NSString stringWithFormat:@"clock-%@.%@",NSUUID.UUID.UUIDString,url.pathExtension.lowercaseString]];
         NSData *font=[NSData dataWithContentsOfURL:url options:NSDataReadingMappedIfSafe error:&error];
         if (access) [url stopAccessingSecurityScopedResource];
         if (!font || error || ![font writeToFile:dst options:NSDataWritingAtomic error:&error]) { [self paletteMessage:@"字体导入失败。"] ; return; }
-        NSURL *local=[NSURL fileURLWithPath:dst]; CFErrorRef regError=NULL;
-        CTFontManagerRegisterFontsForURL((__bridge CFURLRef)local,kCTFontManagerScopeUser,&regError);
-        NSArray *descs=CFBridgingRelease(CTFontManagerCreateFontDescriptorsFromURL((__bridge CFURLRef)local));
-        NSString *postscript=nil; if (descs.count) postscript=CFBridgingRelease(CTFontDescriptorCopyAttribute((__bridge CTFontDescriptorRef)descs.firstObject,kCTFontNameAttribute));
-        if (regError) CFRelease(regError);
-        if (postscript.length) { [self save:postscript key:@"fontName"]; [self paletteMessage:[NSString stringWithFormat:@"字体已导入：%@",postscript]]; }
-        else [self paletteMessage:@"字体已复制，但无法读取字体名称。"];
+        NSURL *local=[NSURL fileURLWithPath:dst];
+        NSString *postscript=nil,*family=nil;
+        UIFont *validated=LSGCFontAtURL(local,nil,12,&postscript,&family);
+        if (validated) {
+            // Publish the exact URL and face together before the single reload notification.
+            CFPreferencesSetAppValue(CFSTR("fontPath"),(__bridge CFStringRef)dst,(__bridge CFStringRef)Domain);
+            CFPreferencesSetAppValue(CFSTR("fontFamily"),(__bridge CFStringRef)(family?:@""),(__bridge CFStringRef)Domain);
+            [self save:postscript key:@"fontName"];
+            [self paletteMessage:[NSString stringWithFormat:@"字体已验证并导入：%@",postscript]];
+        } else {
+            [[NSFileManager defaultManager] removeItemAtPath:dst error:nil];
+            [self paletteMessage:@"无法注册此字体；当前字体设置未改变。"];
+        }
         return;
     }
     (void)controller;

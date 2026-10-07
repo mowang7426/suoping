@@ -25,4 +25,18 @@ assert 'clockHeight' not in source[source.index('static NSString *DateSignature'
 assert 'LSGCLabeledSliderCell.class' in (root/'Preferences/LSGCRootListController.m').read_text()
 assert (root/'control').read_text().split('Version: ',1)[1].splitlines()[0] == '2.0.1'
 assert '#define LSGCVersionString @"2.0.1-standalone"' in (root/'LSGCVersion.h').read_text()
-print(f'OK: {len(required)} labeled clock sliders, version 2.0.1')
+# Event-driven clock geometry and process-local imported fonts.
+font=(root/'LSGCFont.h').read_text()
+prefs=(root/'Preferences/LSGCRootListController.m').read_text()
+assert 'kCTFontManagerScopeProcess' in font and 'kCTFontManagerScopeUser' not in source+prefs
+assert 'CTFontManagerCreateFontDescriptorsFromURL' in font
+assert 'fontPath' in prefs and 'NSUUID.UUID.UUIDString' in prefs
+assert 'RegisterUserFont();' in source[source.index('static void LoadConfig'):source.index('static UIColor *Color')]
+assert 'CSProminentDisplayView' in source and '_UIAnimatingLabel' in source
+assert 'class_getInstanceMethod(cls,sel)' in source and 'MSHookMessageEx(cls,sel,hook,&original)' in source
+assert 'if (IsStandaloneTimeLabel(label)) return label.superview;' in source
+assert 'CATransform3DScale(label.layer.transform' in source
+assert 'mirror.contentScaleFactor=MAX(1,scale)' in source
+assert '4096.0*2048.0' in source and 'TextMaskScale(label)' in source
+assert 'CADisplayLink' not in source and 'scheduledTimer' not in source
+print(f'OK: {len(required)} labeled clock sliders, isolated date geometry, local font registration, event-driven sharp clock')
