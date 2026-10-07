@@ -56,9 +56,6 @@
 			<key>footerText</key><string>导入字体后会复制到插件专用目录，并在下次锁屏刷新时使用。建议使用圆润、较细的数字字体。</string>
 		</dict>
 
-			<key>footerText</key>
-			<string>保留原插件的折射与高光，降低文字边缘染色。此模式使用独立的玻璃染色浓度，不受旧版渐变浓度影响；不会为原本不透明的时钟凭空生成真实折射。</string>
-		</dict>
 		<dict>
 			<key>cell</key>
 			<string>PSSwitchCell</string>
