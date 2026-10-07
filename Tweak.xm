@@ -692,7 +692,7 @@ static void RemoveOverlay(UILabel *label) {
 }
 static NSString *DateSignature(UILabel *label) {
     NSString *fontName=[Config[@"fontName"] isKindOfClass:NSString.class]?Config[@"fontName"]:@"";
-    return [NSString stringWithFormat:@"date|%@|%@|%@|%ld|%ld|%ld|%d|%g|%ld|%@|%@|%@|%@|%@|%@|%@|%@",
+    return [NSString stringWithFormat:@"date|%@|%@|%@|%ld|%ld|%ld|%d|%g|%ld|%@|%@|%@|%@|%@|%@|%@|%@|%@",
         label.attributedText ?: (id)label.text, label.font, NSStringFromCGRect(label.bounds),
         (long)label.numberOfLines,(long)label.textAlignment,(long)label.lineBreakMode,
         label.adjustsFontSizeToFitWidth,label.minimumScaleFactor,(long)label.baselineAdjustment,
