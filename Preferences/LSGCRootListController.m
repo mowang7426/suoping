@@ -719,8 +719,8 @@ static UIColor *LSGCHexColor(NSString *hex) {
         UIFont *validated=LSGCFontAtURL(local,nil,12,&postscript,&family);
         if (validated) {
             // Publish the exact URL and face together before the single reload notification.
-            CFPreferencesSetAppValue(CFSTR("fontPath"),(__bridge CFStringRef)dst,(__bridge CFStringRef)Domain);
-            CFPreferencesSetAppValue(CFSTR("fontFamily"),(__bridge CFStringRef)(family?:@""),(__bridge CFStringRef)Domain);
+            CFPreferencesSetAppValue(CFSTR("fontPath"),(__bridge CFStringRef)dst,Domain);
+            CFPreferencesSetAppValue(CFSTR("fontFamily"),(__bridge CFStringRef)(family?:@""),Domain);
             [self save:postscript key:@"fontName"];
             [self paletteMessage:[NSString stringWithFormat:@"字体已验证并导入：%@",postscript]];
         } else {
