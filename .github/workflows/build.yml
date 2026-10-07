@@ -59,6 +59,9 @@ jobs:
           c++ -std=c++17 -Wall -Wextra -Werror tests/palette_test.cpp -o /tmp/palette_test
           /tmp/palette_test
 
+      - name: Verify settings schema and clock geometry isolation
+        run: python3 scripts/verify_settings.py
+
       - name: Verify package metadata
         run: |
           set -e

@@ -87,6 +87,7 @@ static void LoadConfig(void) {
     values[@"clockColonScale"]=@1.0;
     values[@"clockOffsetY"]=@0.0;
     values[@"clockOffsetX"]=@0.0;
+    values[@"clockHeight"]=@1.0;
     values[@"fontName"]=@"";
     values[@"clockMode"]=@0;
     values[@"clockOpacity"]=@0.32;
@@ -696,7 +697,7 @@ static NSString *DateSignature(UILabel *label) {
         (long)label.numberOfLines,(long)label.textAlignment,(long)label.lineBreakMode,
         label.adjustsFontSizeToFitWidth,label.minimumScaleFactor,(long)label.baselineAdjustment,
         fontName, IsStandaloneTimeLabel(label)?@"time":@"date",
-        Config[@"clockScale"],Config[@"clockWidth"],Config[@"clockSpacing"],Config[@"clockColonScale"],Config[@"clockOffsetX"],Config[@"clockOffsetY"]];
+        Config[@"clockSpacing"],Config[@"clockColonScale"]];
 }
 static void Apply(UILabel *label) {
     if (!NSThread.isMainThread) return;
@@ -742,9 +743,10 @@ static void Apply(UILabel *label) {
                 CGFloat userScale=IsStandaloneTimeLabel(label) ? Clamp([Config[@"clockScale"] doubleValue],0.80,3.50) : 1.0;
                 CGFloat widthScale=IsStandaloneTimeLabel(label) ? Clamp([Config[@"clockWidth"] doubleValue],0.80,1.50) : 1.0;
                 CGFloat sx=frame.size.width/label.bounds.size.width*userScale*widthScale;
-                CGFloat sy=frame.size.height/label.bounds.size.height*userScale;
+                CGFloat sy=frame.size.height/label.bounds.size.height*userScale*heightScale;
                 CGFloat offsetX=IsStandaloneTimeLabel(label) ? Clamp([Config[@"clockOffsetX"] doubleValue],-100,100) : 0;
                 CGFloat offsetY=IsStandaloneTimeLabel(label) ? Clamp([Config[@"clockOffsetY"] doubleValue],-200,200) : 0;
+                CGFloat heightScale=IsStandaloneTimeLabel(label) ? Clamp([Config[@"clockHeight"] doubleValue],0.50,4.00) : 1.0;
                 state.dateHost.bounds=(CGRect){CGPointZero,label.bounds.size};
                 state.dateHost.position=CGPointMake(CGRectGetMidX(frame)+offsetX,CGRectGetMidY(frame)+offsetY);
                 state.dateHost.transform=CATransform3DMakeScale(sx,sy,1);

@@ -158,6 +158,77 @@ static UIColor *LSGCHexColor(NSString *hex) {
     unsigned value=0; [[NSScanner scannerWithString:[hex substringFromIndex:1]] scanHexInt:&value];
     return [UIColor colorWithRed:((value>>16)&255)/255.0 green:((value>>8)&255)/255.0 blue:(value&255)/255.0 alpha:1];
 }
+@interface LSGCLabeledSliderCell : PSTableCell
+@property(nonatomic,strong) UILabel *purposeLabel;
+@property(nonatomic,strong) UILabel *valueLabel;
+@property(nonatomic,strong) UISlider *slider;
+@property(nonatomic,weak) id owner;
+@property(nonatomic,strong) PSSpecifier *sliderSpecifier;
+@property(nonatomic) BOOL tracking;
+@end
+@implementation LSGCLabeledSliderCell
+- (instancetype)initWithStyle:(UITableViewCellStyle)style reuseIdentifier:(NSString *)identifier specifier:(PSSpecifier *)specifier {
+    self=[super initWithStyle:UITableViewCellStyleDefault reuseIdentifier:identifier specifier:specifier];
+    if (!self) return nil;
+    self.selectionStyle=UITableViewCellSelectionStyleNone;
+    self.sliderSpecifier=specifier; self.owner=specifier.target;
+    self.purposeLabel=[UILabel new]; self.purposeLabel.font=[UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
+    self.purposeLabel.textColor=UIColor.labelColor; self.purposeLabel.translatesAutoresizingMaskIntoConstraints=NO;
+    self.valueLabel=[UILabel new]; self.valueLabel.font=[UIFont monospacedDigitSystemFontOfSize:13 weight:UIFontWeightRegular];
+    self.valueLabel.textColor=UIColor.secondaryLabelColor; self.valueLabel.textAlignment=NSTextAlignmentRight; self.valueLabel.translatesAutoresizingMaskIntoConstraints=NO;
+    self.slider=[UISlider new]; self.slider.translatesAutoresizingMaskIntoConstraints=NO;
+    [self.slider addTarget:self action:@selector(sliderChanged:) forControlEvents:UIControlEventValueChanged];
+    [self.slider addTarget:self action:@selector(sliderFinished:) forControlEvents:UIControlEventTouchUpInside|UIControlEventTouchUpOutside|UIControlEventTouchCancel];
+    self.slider.accessibilityTraits=UIAccessibilityTraitAdjustable;
+    [self.contentView addSubview:self.purposeLabel]; [self.contentView addSubview:self.valueLabel]; [self.contentView addSubview:self.slider];
+    [NSLayoutConstraint activateConstraints:@[
+        [self.purposeLabel.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor constant:16],
+        [self.purposeLabel.topAnchor constraintEqualToAnchor:self.contentView.topAnchor constant:9],
+        [self.valueLabel.leadingAnchor constraintGreaterThanOrEqualToAnchor:self.purposeLabel.trailingAnchor constant:8],
+        [self.valueLabel.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor constant:-16],
+        [self.valueLabel.centerYAnchor constraintEqualToAnchor:self.purposeLabel.centerYAnchor],
+        [self.slider.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor constant:16],
+        [self.slider.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor constant:-16],
+        [self.slider.topAnchor constraintEqualToAnchor:self.purposeLabel.bottomAnchor constant:2],
+        [self.slider.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor constant:-8]
+    ]];
+    [self refreshCellContentsWithSpecifier:specifier];
+    return self;
+}
+- (NSString *)formattedValue:(float)value {
+    NSNumber *increment=[self.sliderSpecifier propertyForKey:@"increment"];
+    NSInteger decimals=increment && [increment doubleValue] < 1 ? 2 : 0;
+    return [NSString stringWithFormat:[NSString stringWithFormat:@"%%.%ldf",(long)decimals],value];
+}
+- (void)refreshCellContentsWithSpecifier:(PSSpecifier *)specifier {
+    [super refreshCellContentsWithSpecifier:specifier]; self.sliderSpecifier=specifier; self.owner=specifier.target;
+    self.purposeLabel.text=[specifier name] ?: [specifier propertyForKey:@"label"] ?: @"设置";
+    float min=[[specifier propertyForKey:@"min"] floatValue], max=[[specifier propertyForKey:@"max"] floatValue];
+    if (!(max>min)) { min=0; max=1; }
+    self.slider.minimumValue=min; self.slider.maximumValue=max;
+    id current=nil;
+    if ([self.owner respondsToSelector:@selector(readPreferenceValue:)]) current=[self.owner readPreferenceValue:specifier];
+    if (![current isKindOfClass:NSNumber.class]) current=[specifier propertyForKey:@"default"];
+    float value=MIN(max,MAX(min,[current floatValue])); self.slider.value=value;
+    NSString *shown=[self formattedValue:value]; self.valueLabel.text=shown;
+    self.slider.accessibilityLabel=self.purposeLabel.text; self.slider.accessibilityValue=shown;
+    self.slider.accessibilityHint=@"上下滑动调整，松手后保存";
+}
+- (void)sliderChanged:(UISlider *)sender {
+    NSString *shown=[self formattedValue:sender.value]; self.valueLabel.text=shown; self.slider.accessibilityValue=shown; self.tracking=YES;
+}
+- (void)sliderFinished:(UISlider *)sender { (void)sender; [self commitValue]; }
+- (void)commitValue {
+    if (!self.tracking) return; self.tracking=NO;
+    id owner=self.owner;
+    if (![(id)owner respondsToSelector:@selector(setPreferenceValue:specifier:)]) {
+        for (UIResponder *r=self.nextResponder;r;r=r.nextResponder) if ([r respondsToSelector:@selector(setPreferenceValue:specifier:)]) { owner=r; break; }
+    }
+    if ([owner respondsToSelector:@selector(setPreferenceValue:specifier:)]) [owner setPreferenceValue:@(self.slider.value) specifier:self.sliderSpecifier];
+}
+- (void)dealloc { [self commitValue]; }
+@end
+
 @interface LSGCPreviewCell : PSTableCell
 @property(nonatomic,strong) UIView *swatch;
 @property(nonatomic) CGSize drawnSize;
@@ -324,6 +395,13 @@ static UIColor *LSGCHexColor(NSString *hex) {
 - (NSArray *)specifiers {
     if (!_specifiers) {
         NSMutableArray *loaded=[self loadSpecifiersFromPlistName:@"Root" target:self];
+        NSArray *labeledSliderKeys=@[@"clockScale",@"clockWidth",@"clockSpacing",@"clockColonScale",@"clockOffsetY",@"clockOffsetX",@"clockHeight"];
+        for (PSSpecifier *spec in loaded) {
+            if ([labeledSliderKeys containsObject:[spec propertyForKey:@"key"]]) {
+                [spec setProperty:LSGCLabeledSliderCell.class forKey:@"cellClass"];
+                [spec setProperty:@78 forKey:@"height"];
+            }
+        }
         NSArray *keys=@[@"color1",@"color2",@"color3",@"color4",@"color5"];
         NSMutableArray *colors=[NSMutableArray array];
         for (NSString *key in keys) for (PSSpecifier *spec in loaded) {
