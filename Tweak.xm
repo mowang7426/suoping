@@ -682,6 +682,7 @@ static void Apply(UILabel *label) {
         return;
     }
     // Standalone mode never touches Liquidify labels or their private masks.
+    BOOL scoped=![Config[@"strictScope"] boolValue] || InLockScreen(label);
     RemoveOverlay(label);
     return;
     if (![Config[@"enabled"] boolValue] || !Visible(label) || !GradientText(label.text ?: label.attributedText.string) ||
