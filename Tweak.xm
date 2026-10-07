@@ -743,6 +743,8 @@ static void Apply(UILabel *label) {
                 CGFloat userScale=IsStandaloneTimeLabel(label) ? Clamp([Config[@"clockScale"] doubleValue],0.80,3.50) : 1.0;
                 CGFloat widthScale=IsStandaloneTimeLabel(label) ? Clamp([Config[@"clockWidth"] doubleValue],0.80,1.50) : 1.0;
                 CGFloat heightScale=IsStandaloneTimeLabel(label) ? Clamp([Config[@"clockHeight"] doubleValue],0.50,4.00) : 1.0;
+                CGFloat offsetX=IsStandaloneTimeLabel(label) ? Clamp([Config[@"clockOffsetX"] doubleValue],-100,100) : 0.0;
+                CGFloat offsetY=IsStandaloneTimeLabel(label) ? Clamp([Config[@"clockOffsetY"] doubleValue],-200,200) : 0.0;
                 CGFloat sx=frame.size.width/label.bounds.size.width*userScale*widthScale;
                 CGFloat sy=frame.size.height/label.bounds.size.height*userScale*heightScale;
                 state.dateHost.bounds=(CGRect){CGPointZero,label.bounds.size};
