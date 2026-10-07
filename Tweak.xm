@@ -675,9 +675,14 @@ static void Apply(UILabel *label) {
             CGRect frame=[label convertRect:label.bounds toView:dateParent];
             [CATransaction begin]; [CATransaction setDisableActions:YES];
             @try {
+                // The reference uses an oversized clock. Keep the native time source,
+                // but enlarge only the cached overlay; no per-frame redraw is added.
+                static const CGFloat StandaloneClockScale = 2.35;
+                CGFloat sx=frame.size.width/label.bounds.size.width*StandaloneClockScale;
+                CGFloat sy=frame.size.height/label.bounds.size.height*StandaloneClockScale;
                 state.dateHost.bounds=(CGRect){CGPointZero,label.bounds.size};
                 state.dateHost.position=CGPointMake(CGRectGetMidX(frame),CGRectGetMidY(frame));
-                state.dateHost.transform=CATransform3DMakeScale(frame.size.width/label.bounds.size.width,frame.size.height/label.bounds.size.height,1);
+                state.dateHost.transform=CATransform3DMakeScale(sx,sy,1);
                 if (state.dateHost.superlayer!=dateParent.layer) [dateParent.layer addSublayer:state.dateHost];
                 UpdateParallax();
                 ApplyStyle(label,state,state.dateHost,MotionBits(dateParent)|8);
