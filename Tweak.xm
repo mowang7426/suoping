@@ -14,6 +14,7 @@
 #import "LSGCClockSafety.h"
 #import "LSGCClockScope.h"
 #import "LSGCClockRender.h"
+#import "LSGCLegacyClock.h"
 
 // An optional companion: never patch, replace or distribute Liquidify binaries.
 extern "C" void MSHookMessageEx(Class, SEL, IMP, IMP *);
@@ -33,6 +34,7 @@ static BOOL Hooked;
 static BOOL LabelHooked;
 static NSMutableSet<NSString *> *ClockHookKeys;
 static BOOL NativeClassesLoaded;
+static BOOL LegacyClassesLoaded, ProminentHooked, LegacyHooked;
 static BOOL StartupComplete;
 static BOOL ImageRefreshPending;
 static void Walk(UIView *view,NSUInteger depth);
@@ -42,6 +44,7 @@ static BOOL Rendering;
 static NSUInteger Revision;
 static void Apply(UILabel *label);
 static BOOL ClockReplacementReady(UILabel *label);
+static BOOL DateReplacementReady(UILabel *label);
 static void InstallHooks(void);
 static void InstallLabelHooks(void);
 static void Discover(void);
@@ -94,12 +97,10 @@ static NSString *DiagReport(void);
 @property(nonatomic) NSUInteger motionBits;
 @property(nonatomic) NSUInteger styleToken;
 @property(nonatomic) BOOL clockCommitted;
+@property(nonatomic) BOOL dateCommitted;
 @property(nonatomic) BOOL didUnclipClock;
 @property(nonatomic) BOOL originalClipsToBounds;
 @property(nonatomic) BOOL maskHasInk;
-@property(nonatomic) BOOL hidOriginalLabel;
-@property(nonatomic) CGFloat originalAlpha;
-@property(nonatomic) BOOL originalHidden;
 @end
 @implementation LSGCState
 - (void)dealloc { [_dateHost removeFromSuperlayer]; }
@@ -205,17 +206,87 @@ static BOOL Visible(UIView *view) {
 }
 static BOOL IsDateSubtitleView(NSString *name) {
     return [name isEqualToString:@"CSProminentSubtitleDateView"] ||
-        [name containsString:@"SubtitleDate"] ||
-        [name containsString:@"LockScreenDateSubtitle"];
+        [name isEqualToString:@"SBFLockScreenDateSubtitleDateView"];
 }
 static BOOL IsVibrancyView(NSString *name) {
     return [name isEqualToString:@"BSUIVibrancyEffectView"] || [name hasSuffix:@"VibrancyEffectView"];
+}
+static int LegacyClockKind(UILabel *label) {
+    const char *names[64]; unsigned count=0;
+    for (UIView *view=label; view && count<64; view=view.superview)
+        names[count++]=class_getName(view.class);
+    return LSGCLegacyClockKind(names,count);
 }
 static BOOL IsStandaloneTimeLabel(UILabel *label) {
     const char *names[64]; unsigned count=0;
     for (UIView *view=label; view && count<64; view=view.superview)
         names[count++]=class_getName(view.class);
-    return LSGCMainClockChain(names,count);
+    return LSGCMainClockChain(names,count) || LSGCLegacyClockKind(names,count)!=0;
+}
+// Image-backed legibility is not UILabel drawTextInRect:. Do not hide it or
+// suppress only half of its composite glyph. Even currently invisible image
+// branches force native fallback; a later system transition can activate them.
+static BOOL HasLegibilityImageBranch(UIView *view, NSUInteger depth) {
+    if (!view || depth>16) return YES;
+    NSString *name=NSStringFromClass(view.class);
+    if ([name isEqualToString:@"_UILegibilityView"] ||
+        [name isEqualToString:@"_UILegibilityImageView"]) return YES;
+    for (UIView *child in view.subviews)
+        if (HasLegibilityImageBranch(child,depth+1)) return YES;
+    return NO;
+}
+static BOOL TextDrawCovered(UILabel *label) {
+    // Unknown subclass overrides may bypass UILabel. Coverage must match a
+    // registered override, not merely the existence of the base hook.
+    for (Class cls=label.class; cls && cls!=UILabel.class; cls=class_getSuperclass(cls)) {
+        unsigned count=0; Method *methods=class_copyMethodList(cls,&count);
+        BOOL own=NO;
+        for (unsigned i=0;i<count;i++) if (method_getName(methods[i])==@selector(drawTextInRect:)) own=YES;
+        free(methods);
+        if (own && ![ClockHookKeys containsObject:[NSStringFromClass(cls) stringByAppendingString:@"/drawTextInRect:"]]) return NO;
+    }
+    return LabelHooked;
+}
+static UIView *LegacyClockParent(UILabel *label, NSString **reason) {
+    int kind=LegacyClockKind(label);
+    UIView *source=kind==1 ? label.superview : label;
+    UIView *host=source.superview;
+    if (!kind || ![NSStringFromClass(host.class) isEqualToString:@"SBFLockScreenDateView"]) {
+        if (reason) *reason=@"legacy-identity"; return nil;
+    }
+    if (HasLegibilityImageBranch(source,0)) {
+        if (reason) *reason=@"legacy-image-backed-native-fallback"; return nil;
+    }
+    // A unique structural wrapper identifies the primary clock. Plain direct
+    // siblings require the owner's explicit timeLabel reference; text alone is
+    // not enough to distinguish charging/duplicate transition labels.
+    NSUInteger sources=0;
+    for (UIView *child in host.subviews)
+        if ([NSStringFromClass(child.class) isEqualToString:@"SBUILegibilityLabel"]) sources++;
+    BOOL owner=kind==1 ? sources==1 : (ReadObject(host,@"timeLabel")==source);
+    NSString *value=label.attributedText.string ?: label.text;
+    NSMutableCharacterSet *allowed=[NSCharacterSet.decimalDigitCharacterSet mutableCopy];
+    [allowed formUnionWithCharacterSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    [allowed addCharactersInString:@":：∶\u200e\u200f\u202a\u202b\u202c\u2066\u2067\u2068\u2069"];
+    BOOL text=TimeText(value) && [value rangeOfCharacterFromSet:allowed.invertedSet].location==NSNotFound;
+    if (kind==1 && ([source isKindOfClass:UILabel.class] || source.subviews.count!=1 ||
+        source.subviews.firstObject!=label || source.layer.contents ||
+        source.layer.sublayers.count!=1 || source.layer.sublayers.firstObject!=label.layer ||
+        class_getMethodImplementation(source.class,@selector(drawRect:))!=class_getMethodImplementation(UIView.class,@selector(drawRect:))))
+        owner=NO; // Uncovered composite/custom-draw parents always keep native.
+    if (kind==2 && (source.class!=UILabel.class || source.subviews.count || source.layer.sublayers.count))
+        owner=NO; // Direct legibility/composite siblings are diagnostic candidates only.
+    for (UIView *child in host.subviews) {
+        if (child==source || ![child isKindOfClass:UILabel.class]) continue;
+        UILabel *other=(UILabel *)child;
+        if (TimeText(other.attributedText.string ?: other.text)) owner=NO; // Transition duplicates: preserve native.
+    }
+    LSGCLegacyReadiness ready={text && (kind!=1 || sources==1),owner,TextDrawCovered(label),true};
+    if (!LSGCCanRenderLegacy(ready)) {
+        if (reason) *reason=@"legacy-ambiguous-or-uncovered-native-fallback"; return nil;
+    }
+    if (reason) *reason=@"legacy-verified-text-sibling";
+    return host;
 }
 // Select before visibility: the transparent source wrapper is not on the
 // sibling overlay's render path. Identity is the complete exact main-time chain.
@@ -229,6 +300,7 @@ static UIView *ClockSourceWrapper(UILabel *label) {
 }
 static UIView *ClockSelectOverlayParent(UILabel *label, NSString **reason) {
     if (!IsStandaloneTimeLabel(label)) { if (reason) *reason=@"identity"; return nil; }
+    if (LegacyClockKind(label)) return LegacyClockParent(label,reason);
     UIView *wrapper=ClockSourceWrapper(label);
     if (!wrapper) { if (reason) *reason=@"sibling-wrapper-missing:requires-direct-UIView-parent-of-time-or-label"; return nil; }
     BOOL bypass=LSGCAllowSourceWrapper(true, wrapper.class==UIView.class,
@@ -317,10 +389,12 @@ static UIView *DateOverlayParent(UILabel *label) {
     // transform/animation (notification reflow, swipe and clock shrink).
     // Do not move time out of its animated hierarchy as we do for date vibrancy.
     if (IsStandaloneTimeLabel(label)) return nil; // Main time never enters the date-only route.
+    if (HasLegibilityImageBranch(label,0)) return nil;
     BOOL subtitle=NO;
     UIView *dateView=nil, *parent=nil;
     for (UIView *view=label.superview;view;view=view.superview) {
         NSString *name=NSStringFromClass(view.class);
+        if ([name isEqualToString:@"SBUILegibilityLabel"] && HasLegibilityImageBranch(view,0)) return nil;
         if ([name isEqualToString:@"CSProminentTimeView"]) return nil;
         if (IsDateSubtitleView(name)) { subtitle=YES; dateView=view; }
         if (subtitle && !parent && IsVibrancyView(name)) parent=view.superview;
@@ -789,13 +863,8 @@ static void InstallMask(LSGCState *s,UIImage *image,BOOL native,CALayer *source,
 static void RemoveOverlay(UILabel *label) {
     LSGCState *s=objc_getAssociatedObject(label,&StateKey);
     if (!s) return;
-    if (s.hidOriginalLabel) {
-        label.alpha=s.originalAlpha;
-        label.hidden=s.originalHidden;
-        s.hidOriginalLabel=NO;
-    }
     if (s.didUnclipClock) { label.clipsToBounds=s.originalClipsToBounds; s.didUnclipClock=NO; }
-    if (s.clockCommitted) { s.clockCommitted=NO; [label setNeedsDisplay]; }
+    if (s.clockCommitted || s.dateCommitted) { s.clockCommitted=NO; s.dateCommitted=NO; [label setNeedsDisplay]; }
     s.maskHasInk=NO;
     s.ticket++; s.busy=NO; s.dirty=NO;
     [s.gradient removeFromSuperlayer]; [s.gradient removeAllAnimations];
@@ -833,7 +902,12 @@ static NSString *DateSignature(UILabel *label) {
 static BOOL ClockReplacementReady(UILabel *label) {
     LSGCState *s=objc_getAssociatedObject(label,&StateKey);
     if (!Hooked || !LabelHooked || !s || !s.clockCommitted || !IsStandaloneTimeLabel(label) ||
-        ![s.hostSelection isEqualToString:@"alpha-zero-wrapper-sibling"]) return NO;
+        (!LegacyClockKind(label) && ![s.hostSelection isEqualToString:@"alpha-zero-wrapper-sibling"])) return NO;
+    if (LegacyClockKind(label)) {
+        NSString *reason=nil;
+        if (!LegacyHooked || LegacyClockParent(label,&reason)!=s.clockHost ||
+            ![s.hostSelection isEqualToString:@"legacy-verified-text-sibling"]) return NO;
+    } else if (!ProminentHooked) return NO;
     NSString *name=[Config[@"fontName"] isKindOfClass:NSString.class] ? Config[@"fontName"] : @"";
     BOOL fontReady=!name.length || (ImportedFont!=nil) ||
         (![Config[@"fontPath"] length] && [UIFont fontWithName:name size:label.font.pointSize]!=nil);
@@ -858,6 +932,41 @@ static BOOL ClockReplacementReady(UILabel *label) {
         s.gradient.opacity*s.dateHost.opacity*colorAlpha, (bool)(Hooked && LabelHooked) };
     return LSGCCanReplaceClock(ready);
 }
+static BOOL DateReplacementReady(UILabel *label) {
+    LSGCState *s=objc_getAssociatedObject(label,&StateKey);
+    UIView *parent=DateOverlayParent(label);
+    if (!s || !s.dateCommitted || IsStandaloneTimeLabel(label) ||
+        ![Config[@"enabled"] boolValue] || ![Config[@"dateGradient"] boolValue] ||
+        !(label.attributedText.length || label.text.length) ||
+        TimeText(label.attributedText.string ?: label.text) || !TextDrawCovered(label) ||
+        !Visible(label) || !parent || !Visible(parent) || !s.maskHasInk ||
+        ![s.signature isEqualToString:DateSignature(label)] ||
+        s.dateHost.superlayer!=parent.layer || s.gradient.superlayer!=s.dateHost ||
+        s.gradient.mask!=s.mask || !s.mask.contents || s.dateHost.hidden || s.gradient.hidden) return NO;
+    CGRect rect=label.window ? [s.dateHost convertRect:s.dateHost.bounds toLayer:label.window.layer] : CGRectZero;
+    CGFloat alpha=0;
+    for (id color in s.gradient.colors) alpha=MAX(alpha,CGColorGetAlpha((__bridge CGColorRef)color));
+    if (!CGRectIsEmpty(rect) && !CGRectIsInfinite(rect) && !CGRectIsNull(rect)) rect=CGRectIntersection(rect,label.window.bounds);
+    else return NO;
+    for (UIView *v=label; v; v=v.superview) {
+        CALayer *shown=(CALayer *)v.layer.presentationLayer ?: v.layer;
+        if (v.hidden || v.layer.hidden || shown.hidden || !isfinite(v.alpha) || v.alpha<0.01 ||
+            !isfinite(v.layer.opacity) || v.layer.opacity<0.01 || !isfinite(shown.opacity) || shown.opacity<0.01) return NO;
+    }
+    CGFloat effectiveOpacity=1;
+    for (CALayer *layer=s.dateHost; layer; layer=layer.superlayer) {
+        CALayer *shown=(CALayer *)layer.presentationLayer ?: layer;
+        if (layer.hidden || shown.hidden || !isfinite(layer.opacity) || !isfinite(shown.opacity)) return NO;
+        effectiveOpacity*=MIN(layer.opacity,shown.opacity);
+    }
+    for (UIView *v=parent; v; v=v.superview) {
+        CALayer *shown=(CALayer *)v.layer.presentationLayer ?: v.layer;
+        if (v.layer.mask || shown.mask || !CATransform3DIsAffine(v.layer.transform) || !CATransform3DIsAffine(shown.transform)) return NO;
+        if (v.clipsToBounds || v.layer.masksToBounds || shown.masksToBounds)
+            rect=CGRectIntersection(rect,[v convertRect:v.bounds toView:label.window]);
+    }
+    return !CGRectIsEmpty(rect) && !CGRectIsNull(rect) && effectiveOpacity*s.gradient.opacity*alpha>=0.01;
+}
 static void Apply(UILabel *label) {
     DiagInc(&DiagApply); DiagApplyReturn=@"entered";
     if (!NSThread.isMainThread) { DiagApplyReturn=@"not-main-thread"; return; }
@@ -874,7 +983,7 @@ static void Apply(UILabel *label) {
     if (clock && (!Hooked || !label.superview)) { DiagApplyReturn=!Hooked ? @"hook-not-ready" : @"no-superview"; DiagCaptureFailure(label,DiagApplyReturn); RemoveOverlay(label); return; }
     if (!isGlassLabel && dateParent) {
         NSString *displayText=label.text ?: label.attributedText.string;
-        BOOL allowDate=TimeText(displayText) || [Config[@"dateGradient"] boolValue];
+        BOOL allowDate=clock || ([Config[@"dateGradient"] boolValue] && !TimeText(displayText));
         if (![Config[@"enabled"] boolValue] || !allowDate || !Visible(dateParent) ||
             !(label.text.length || label.attributedText.length) || label.bounds.size.width<1 || label.bounds.size.height<1 ||
             label.bounds.size.width>2048 || label.bounds.size.height>2048) {
@@ -901,19 +1010,8 @@ static void Apply(UILabel *label) {
                 if (!image || !HasAlpha(image)) { DiagApplyReturn=@"mask-no-ink"; if (clock) DiagCaptureFailure(label,DiagApplyReturn); RemoveOverlay(label); state.maskMode=@"遮罩无有效像素，保留系统文字"; return; }
                 state.maskHasInk=YES;
                 InstallMask(state,image,NO,nil,state.dateHost,label);
-                // Replace the system glyph while preserving its layout and update path.
-                if (!clock && !state.hidOriginalLabel) {
-                    state.originalAlpha=label.alpha;
-                    state.originalHidden=label.hidden;
-                    state.hidOriginalLabel=YES;
-                    label.alpha=0.0;
-                }
                 state.signature=signature;
             }
-            // UIKit may restore a date label's alpha while reusing the cached
-            // signature. Reassert replacement on every event, not only rebuilds,
-            // otherwise native glyphs and the sibling overlay are both visible.
-            if (!clock && state.hidOriginalLabel) label.alpha=0.0;
             // Convert geometry through the source hierarchy on each layout tick.
             CGRect frame=[label convertRect:label.bounds toView:dateParent];
             [CATransaction begin]; [CATransaction setDisableActions:YES];
@@ -959,6 +1057,13 @@ static void Apply(UILabel *label) {
                 UpdateParallax();
                 ApplyStyle(label,state,state.dateHost,MotionBits(dateParent)|8);
             } @finally { [CATransaction commit]; }
+            if (!clock) {
+                state.dateCommitted=YES;
+                if (!DateReplacementReady(label)) {
+                    DiagApplyReturn=@"date-readiness-native-fallback"; RemoveOverlay(label); return;
+                }
+                [label setNeedsDisplay];
+            }
             if (clock) {
                 state.clockCommitted=YES;
                 if (!ClockReplacementReady(label)) {
@@ -1056,9 +1161,12 @@ static void InstallHooks(void) {
         NSClassFromString(@"SBFLockScreenDateView");
     // Success means native classes exist AND each actual override is installed.
     // Inherited selectors are covered by the UILabel / UIView base hooks.
-    Hooked=LabelHooked && NativeClassesLoaded;
+    LegacyClassesLoaded=NSClassFromString(@"SBFLockScreenDateView")!=Nil;
+    ProminentHooked=LabelHooked && NativeClassesLoaded;
+    LegacyHooked=LabelHooked && LegacyClassesLoaded;
+    Hooked=ProminentHooked || LegacyHooked;
     NSMutableArray *status=[NSMutableArray array];
-    for (NSString *name in @[@"SBFLockScreenDateView",@"CSProminentTimeView",@"CSProminentDisplayView",@"_UIAnimatingLabel"]) {
+    for (NSString *name in @[@"SBFLockScreenDateView",@"CSProminentTimeView",@"CSProminentDisplayView",@"_UIAnimatingLabel",@"SBUILegibilityLabel"]) {
         Class cls=NSClassFromString(name);
         if (!cls) { [status addObject:[name stringByAppendingString:@": 未加载"]]; continue; }
         [status addObject:[name stringByAppendingString:@": 已加载"]];
@@ -1070,14 +1178,19 @@ static void InstallHooks(void) {
             if (!own) continue;
             NSString *key=[name stringByAppendingFormat:@"/%@",method];
             BOOL ok=[ClockHookKeys containsObject:key];
-            Hooked=Hooked && ok;
+            if ([name isEqualToString:@"SBFLockScreenDateView"]) {
+                ProminentHooked=ProminentHooked && ok; LegacyHooked=LegacyHooked && ok;
+            } else if ([name isEqualToString:@"SBUILegibilityLabel"]) LegacyHooked=LegacyHooked && ok;
+            else ProminentHooked=ProminentHooked && ok;
             [status addObject:[key stringByAppendingString:ok ? @": 已安装" : @": 失败"]];
         }
         free(methods);
     }
+    Hooked=ProminentHooked || LegacyHooked;
     NSString *previousReport=HookReport;
     HookReport=[NSString stringWithFormat:@"standalone-native-clock; UILabel/UIView=%@; %@",
         LabelHooked ? @"已安装" : @"失败",[status componentsJoinedByString:@"; "]];
+    HookReport=[HookReport stringByAppendingFormat:@"; prominent-ready=%d legacy-ready=%d; image-backed=untouched-native-fallback",ProminentHooked,LegacyHooked];
     if (![previousReport isEqualToString:HookReport]) NSLog(@"[LSGC] installation: %@",HookReport);
 }
 static void (*OrigViewMove)(id,SEL);
@@ -1099,6 +1212,9 @@ static void LabelDraw(id obj,SEL sel,CGRect rect) {
     ++DiagDrawDepth;
     @try {
         if (!Rendering && ClockReplacementReady((UILabel *)obj)) { if (main) DiagInc(&DiagSuppress); return; }
+        if (!Rendering && DateReplacementReady((UILabel *)obj)) return;
+        LSGCState *state=objc_getAssociatedObject(obj,&StateKey);
+        if (!Rendering && (state.clockCommitted || state.dateCommitted)) RemoveOverlay((UILabel *)obj);
         if (main) DiagInc(&DiagNative);
         OrigLabelDraw(obj,sel,rect);
     } @finally { --DiagDrawDepth; }
@@ -1149,7 +1265,7 @@ static void InstallLabelHooks(void) {
 static void InstallClockHooks(void) {
     if (!ClockHookKeys) ClockHookKeys=[NSMutableSet set];
     NSMutableSet<NSString *> *installed=ClockHookKeys;
-    for (NSString *name in @[@"SBFLockScreenDateView",@"CSProminentTimeView",@"CSProminentDisplayView",@"_UIAnimatingLabel"]) {
+    for (NSString *name in @[@"SBFLockScreenDateView",@"CSProminentTimeView",@"CSProminentDisplayView",@"_UIAnimatingLabel",@"SBUILegibilityLabel"]) {
         Class cls=NSClassFromString(name);
         if (!cls) continue;
         BOOL labelClass=[cls isSubclassOfClass:UILabel.class];
@@ -1181,6 +1297,9 @@ static void InstallClockHooks(void) {
                     ++DiagDrawDepth;
                     @try {
                         if (!Rendering && ClockReplacementReady((UILabel *)obj)) { if (main) DiagInc(&DiagSuppress); return; }
+                        if (!Rendering && DateReplacementReady((UILabel *)obj)) return;
+                        LSGCState *state=objc_getAssociatedObject(obj,&StateKey);
+                        if (!Rendering && (state.clockCommitted || state.dateCommitted)) RemoveOverlay((UILabel *)obj);
                         if (main) DiagInc(&DiagNative);
                         ((void(*)(id,SEL,CGRect))original)(obj,sel,rect);
                     } @finally { --DiagDrawDepth; }
@@ -1242,7 +1361,7 @@ static void WriteDiagnostics(void) {
         active+=(time && ClockReplacementReady(label));
         BOOL date=!time && DateOverlayParent(label)!=nil;
         if (date) {
-            dates++; dateActive+=(s.gradient.superlayer!=nil);
+            dates++; dateActive+=DateReplacementReady(label);
             if (dateDetails.count<12) [dateDetails addObject:[NSString stringWithFormat:@"%@ bounds=%@ 可见=%d 锁屏=%d 渐变=%d 浓度=%.2f 模式=%@",
                 NSStringFromClass(label.class),NSStringFromCGRect(label.bounds),Visible(label),lock,
                 s.gradient.superlayer!=nil,s.gradient.opacity,s.maskMode?:@"未渲染"]];
@@ -1258,6 +1377,9 @@ static void WriteDiagnostics(void) {
                     blocked=[NSString stringWithFormat:@"%@ hidden=%d alpha=%.3f",NSStringFromClass(ancestor.class),ancestor.hidden,ancestor.alpha]; break;
                 }
             }
+            NSString *legacyReason=nil;
+            if (LegacyClockKind(label)) LegacyClockParent(label,&legacyReason);
+            [details addObject:[NSString stringWithFormat:@"层级=%@ 传统选择=%@ 原生image路径=%@",LegacyClockKind(label)?@"traditional":@"prominent",legacyReason?:@"not-legacy",LegacyClockKind(label) && HasLegibilityImageBranch(LegacyClockKind(label)==1?label.superview:label,0)?@"保持原样":@"无/不适用"]];
             NSString *mode=s.maskMode ?: (!Hooked ? @"Hook未就绪，保留系统时间" : (!Visible(label) ? @"原生层不可见，未尝试替换" : @"待布局/渲染，保留系统时间"));
             [details addObject:[NSString stringWithFormat:@"主时间候选=是 时间形态=%@ 锁屏范围=%@ 可见=%@ 分隔符=%@\nbounds=%@ hidden=%d alpha=%.3f 不可见原因=%@\n已渲染=%@ 模式=%@\n%@",TimeText(label.text ?: label.attributedText.string)?@"是":@"否",lock?@"是":@"否",Visible(label)?@"是":@"否",SeparatorCodes(label.text ?: label.attributedText.string),NSStringFromCGRect(label.bounds),label.hidden,label.alpha,blocked,ClockReplacementReady(label)?@"是":@"否",mode,[chain componentsJoinedByString:@" > "]]];
         }
@@ -1265,6 +1387,7 @@ static void WriteDiagnostics(void) {
     NSString *report=[NSString stringWithFormat:@"兼容层 %@\n类已加载（原生四类）：%@\nHook 已安装：%@\nHook 明细：%@\n扫描发现（时间+日期）：%lu\n主时间扫描发现：%lu\n主时间锁屏范围命中：%lu\n主时间安全门当前通过（不代表像素上屏）：%lu\n请求开关：%@\n实际时间替换：%@\n构造器初始化：%@\n\n%@",
         LSGCVersionString,NativeClassesLoaded?@"是":@"否",Hooked?@"是":@"否",HookReport?:@"无",(unsigned long)Labels.allObjects.count,(unsigned long)clocks,(unsigned long)scoped,(unsigned long)active,[Config[@"enabled"] boolValue]?@"开":@"关",
         ([Config[@"enabled"] boolValue] && Hooked && active)?@"当前满足抑制门禁（需主时间draw计数与截图佐证）":@"未生效（保留系统时间）",StartupComplete?@"完成":@"未完成",[details componentsJoinedByString:@"\n\n"]];
+    report=[report stringByAppendingFormat:@"\n按层级Hook门禁：prominent=%d traditional=%d（不要求四类同时加载）\n传统image-backed策略：保留系统，不修改alpha/hidden/contents，不单独抑制UILabel。\n设置页采样不可见不是锁屏像素证据。",ProminentHooked,LegacyHooked];
     NSMutableArray *tree=[NSMutableArray array];
     for (UIView *root in DateViews.allObjects) {
         NSMutableArray<UIView *> *queue=[NSMutableArray arrayWithObject:root];

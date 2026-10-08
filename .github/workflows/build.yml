@@ -67,6 +67,9 @@ jobs:
           c++ -std=c++17 -Wall -Wextra -Werror tests/clock_scope_test.cpp -o /tmp/clock_scope_test
           /tmp/clock_scope_test
           python3 scripts/verify_clock_startup.py
+          c++ -std=c++17 -Wall -Wextra -Werror tests/legacy_clock_test.cpp -o /tmp/legacy_clock_test
+          /tmp/legacy_clock_test
+          python3 scripts/verify_legacy_clock.py
           python3 scripts/verify_clock_diagnostics.py
           c++ -std=c++17 -Wall -Wextra -Werror tests/clock_render_test.cpp -o /tmp/clock_render_test
           /tmp/clock_render_test

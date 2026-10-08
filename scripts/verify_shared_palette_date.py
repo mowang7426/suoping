@@ -13,6 +13,6 @@ assert 's.dateHost && !standaloneTime) s.gradient.opacity=1' in a
 snapshot=s[s.index('static UIImage *SnapshotText('):s.index('// Preserve original highlights')]
 assert 'if (!clock) {' in snapshot and 'removeAttribute:NSStrokeWidthAttributeName' in snapshot
 apply=s[s.index('static void Apply(UILabel *label) {'):s.index('static void InstallHooks(void) {')]
-assert apply.index('state.signature=signature;') < apply.index('if (!clock && state.hidOriginalLabel) label.alpha=0.0;')
+assert apply.index('state.signature=signature;') < apply.index('state.dateCommitted=YES') < apply.index('if (!DateReplacementReady(label))')
 assert 'CADisplayLink' not in s and 'scheduledTimer' not in s
 print('OK: shared five-color/hue/direction/animation pipeline, explicit revision invalidation, date solid mask/full fill/cache-hit native suppression')

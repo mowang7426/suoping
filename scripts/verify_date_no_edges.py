@@ -16,7 +16,7 @@ snapshot=s[s.index('static UIImage *SnapshotText('):s.index('// Preserve origina
 assert '[text removeAttribute:NSStrokeWidthAttributeName range:all]' in snapshot
 assert '[text removeAttribute:NSStrokeColorAttributeName range:all]' in snapshot
 assert 'if (!IsStandaloneTimeLabel(label)) return base;' in s
-assert 'if (!clock && state.hidOriginalLabel) label.alpha=0.0;' in apply
+assert 'state.dateCommitted=YES' in apply and 'DateReplacementReady(label)' in apply
 items=plistlib.loads((r/'Preferences/Resources/Root.plist').read_bytes())['items']
 keys={i['key'] for i in items if 'key' in i}
 for k in ['edgeEnabled','edgePalette','edgeCore','edgeStrength','edgeWidth','edgeHighlight','edgeReveal','independentEdges','edgeColor1','edgeColor2','edgeColor3']:
