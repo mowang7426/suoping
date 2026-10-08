@@ -570,111 +570,6 @@ static void ClearEdges(LSGCState *s) {
     [s.edgeBevel removeAllAnimations];
     s.edgeHost=nil; s.edgeTint=nil; s.edgeMask=nil; s.edgeBevel=nil;
 }
-static BOOL BuildEdgeImages(UIImage *image,CGFloat edgeWidth,CGImageRef *ringOut,CGImageRef *bevelOut) {
-    if (ringOut) *ringOut=NULL;
-    if (bevelOut) *bevelOut=NULL;
-    CGImageRef input=image.CGImage;
-    size_t w=input ? CGImageGetWidth(input) : 0,h=input ? CGImageGetHeight(input) : 0;
-    if (!w || !h || w>4096 || h>4096 || w*h>4194304) return NO;
-    size_t count=w*h*4;
-    unsigned char *rgba=(unsigned char *)calloc(count,1);
-    unsigned char *ring=(unsigned char *)calloc(count,1);
-    unsigned char *bevel=(unsigned char *)calloc(count,1);
-    if (!rgba || !ring || !bevel) { free(rgba); free(ring); free(bevel); return NO; }
-    CGColorSpaceRef space=CGColorSpaceCreateDeviceRGB();
-    CGBitmapInfo flags=kCGImageAlphaPremultipliedLast|kCGBitmapByteOrder32Big;
-    CGContextRef source=CGBitmapContextCreate(rgba,w,h,8,w*4,space,flags);
-    CGContextRef ringContext=CGBitmapContextCreate(ring,w,h,8,w*4,space,flags);
-    CGContextRef bevelContext=CGBitmapContextCreate(bevel,w,h,8,w*4,space,flags);
-    CGColorSpaceRelease(space);
-    BOOL valid=source && ringContext && bevelContext;
-    CGImageRef ringImage=NULL,bevelImage=NULL;
-    if (valid) {
-        CGContextDrawImage(source,CGRectMake(0,0,w,h),input);
-        float radius=(float)(Clamp(edgeWidth,0.5,4)*image.scale);
-        valid=LSGCMakeEdges(rgba,w,h,radius,ring,bevel);
-        if (valid) {
-            ringImage=CGBitmapContextCreateImage(ringContext);
-            bevelImage=CGBitmapContextCreateImage(bevelContext);
-            valid=ringImage && bevelImage;
-        }
-    }
-    if (source) CGContextRelease(source);
-    if (ringContext) CGContextRelease(ringContext);
-    if (bevelContext) CGContextRelease(bevelContext);
-    free(rgba); free(ring); free(bevel);
-    if (!valid) {
-        if (ringImage) CGImageRelease(ringImage);
-        if (bevelImage) CGImageRelease(bevelImage);
-        return NO;
-    }
-    *ringOut=ringImage; *bevelOut=bevelImage;
-    return YES;
-}
-static void InstallEdgeContents(LSGCState *s,CGImageRef ringImage,CGImageRef bevelImage,CGFloat scale) {
-    if (!ringImage || !bevelImage) { ClearEdges(s); return; }
-    if (!s.edgeHost) {
-        s.edgeHost=[CALayer layer]; s.edgeHost.name=@"LSGC.OptionalColorEdges";
-        s.edgeTint=[CAGradientLayer layer]; s.edgeMask=[CALayer layer]; s.edgeBevel=[CALayer layer];
-        s.edgeTint.mask=s.edgeMask;
-        [s.edgeHost addSublayer:s.edgeTint]; [s.edgeHost addSublayer:s.edgeBevel];
-    }
-    s.edgeMask.contents=(__bridge id)ringImage;
-    s.edgeMask.contentsScale=scale; s.edgeMask.contentsGravity=kCAGravityResize;
-    s.edgeBevel.contents=(__bridge id)bevelImage;
-    s.edgeBevel.contentsScale=scale; s.edgeBevel.contentsGravity=kCAGravityResize;
-}
-static void MatchGeometry(CALayer *layer,CALayer *reference) {
-    layer.transform=CATransform3DIdentity;
-    layer.bounds=reference.bounds; layer.anchorPoint=reference.anchorPoint;
-    layer.position=reference.position; layer.transform=reference.transform;
-}
-static void ApplyEdges(LSGCState *s,CALayer *host) {
-    if (![Config[@"edgeEnabled"] boolValue]) { ClearEdges(s); return; }
-    if (!s.edgeHost) return;
-    BOOL appearing=s.edgeHost.superlayer==nil;
-    s.edgeHost.bounds=(CGRect){CGPointZero,host.bounds.size};
-    s.edgeHost.position=CGPointMake(CGRectGetMidX(host.bounds),CGRectGetMidY(host.bounds));
-    s.edgeHost.zPosition=s.gradient.zPosition+0.01;
-    s.edgeTint.bounds=(CGRect){CGPointZero,host.bounds.size};
-    s.edgeTint.position=CGPointMake(host.bounds.size.width*.5,host.bounds.size.height*.5);
-    MatchGeometry(s.edgeMask,s.mask); MatchGeometry(s.edgeBevel,s.mask);
-    NSInteger preset=[Config[@"edgePalette"] integerValue];
-    NSArray *colors;
-    if ([Config[@"independentEdges"] boolValue]) {
-        NSMutableArray *custom=[NSMutableArray array];
-        NSArray *fallback=@[@"#D0FAFF",@"#B39CFF",@"#F7A9DD"];
-        for (NSUInteger i=0;i<3;i++) {
-            NSString *key=[NSString stringWithFormat:@"edgeColor%lu",(unsigned long)i+1];
-            UIColor *c=Color(Config[key],Color(fallback[i],UIColor.whiteColor));
-            [custom addObject:(__bridge id)c.CGColor];
-        }
-        colors=custom;
-    } else if (preset==2) colors=s.gradient.colors;
-    else {
-        NSArray *hex=preset==1 ? @[@"#FFF1DB",@"#F7B2CB",@"#E1B7FF",@"#FFD296"] :
-                                @[@"#D0FAFF",@"#72CFFB",@"#B39CFF",@"#F7A9DD"];
-        NSMutableArray *built=[NSMutableArray array];
-        for (NSString *h in hex) [built addObject:(__bridge id)Color(h,UIColor.whiteColor).CGColor];
-        colors=built;
-    }
-    s.edgeTint.colors=colors;
-    s.edgeTint.startPoint=CGPointMake(0,0); s.edgeTint.endPoint=CGPointMake(1,1);
-    s.edgeTint.opacity=Clamp([Config[@"edgeStrength"] doubleValue],0,1);
-    float intensity=(float)Clamp([Config[@"edgeHighlight"] doubleValue],0,1);
-    s.edgeBevel.opacity=intensity;
-    if (![Config[@"edgeReveal"] boolValue]) [s.edgeBevel removeAllAnimations];
-    if (s.edgeHost.superlayer!=host) {
-        [s.edgeHost removeFromSuperlayer]; [host addSublayer:s.edgeHost];
-    }
-    if (appearing && [Config[@"edgeReveal"] boolValue] && (s.motionBits&7)==0 && intensity>0) {
-        CAKeyframeAnimation *flash=[CAKeyframeAnimation animationWithKeyPath:@"opacity"];
-        flash.values=@[@0,@(MIN(1,intensity*1.5)),@(intensity)];
-        flash.keyTimes=@[@0,@0.25,@1]; flash.duration=0.9;
-        [s.edgeBevel addAnimation:flash forKey:@"LSGC.EdgeReveal"];
-    }
-}
-
 static CGFloat Quantize(CGFloat value,CGFloat scale) {
     if (!(scale>0) || !isfinite(value)) return 0;
     return round(value*scale)/scale;
@@ -723,7 +618,7 @@ static NSString *DescribeMask(UILabel *label,CALayer **sourceOut,CALayer **owner
     BOOL native=owner && [Config[@"maskMode"] integerValue]!=1;
     NSUInteger motion=MotionBits(label);
     BOOL glass=[Config[@"glassBlend"] boolValue] && (motion&8)==0;
-    BOOL edges=[Config[@"edgeEnabled"] boolValue];
+    BOOL edges=NO;
     CGFloat scale=MaskScale(label.bounds.size);
     LSGCState *state=objc_getAssociatedObject(label,&StateKey);
     CALayer *host=native ? owner : label.layer;
@@ -740,7 +635,7 @@ static NSString *DescribeMask(UILabel *label,CALayer **sourceOut,CALayer **owner
         label.attributedText ?: (id)label.text,QuantizedRect(label.bounds,scale),label.font,source,(__bridge void *)source.contents,
         QuantizedRect(source ? source.frame : CGRectZero,scale),QuantizedRect(source ? source.bounds : CGRectZero,scale),
         source ? [NSValue valueWithCATransform3D:source.transform] : @"none",owner,QuantizedRect(owner ? owner.bounds : label.bounds,scale),
-        ReadFlag(label,@"cachedBuildFinished"),native,scale,Clamp([Config[@"edgeWidth"] doubleValue],0.5,4),glass,edges];
+        ReadFlag(label,@"cachedBuildFinished"),native,scale,0.0,glass,edges];
 }
 static void ConsiderWallpaper(UIView *view,NSArray<NSString *> *needles,NSUInteger depth,UIView **best,CGFloat *bestArea) {
     if (!view || depth>28) return;
@@ -805,11 +700,6 @@ static void ApplyStyle(UILabel *label,LSGCState *s,CALayer *host,NSUInteger moti
     s.gradient.position=CGPointMake(CGRectGetMidX(host.bounds),CGRectGetMidY(host.bounds));
     s.gradient.opacity=standaloneTime ? LSGCClockFillOpacity([Config[@"clockOpacity"] doubleValue]) : (glass ? Clamp([Config[@"glassTint"] doubleValue],0,0.65) : Clamp([Config[@"opacity"] doubleValue],0,1));
     if (s.dateHost && !standaloneTime) s.gradient.opacity=1;
-    if (!standaloneTime && [Config[@"edgeEnabled"] boolValue] && s.edgeHost) {
-        // Small date/lunar strokes must remain readable underneath the contour.
-        CGFloat core=Clamp([Config[@"edgeCore"] doubleValue],0,1);
-        s.gradient.opacity *= s.dateHost ? MAX(0.85,core) : core;
-    }
     if (motionBits&4) s.gradient.opacity*=0.4;
     NSInteger direction=[Config[@"direction"] integerValue];
     double base=[Config[@"customAngleEnabled"] boolValue] ? [Config[@"gradientAngle"] doubleValue] : (direction==1 ? 90 : (direction==2 ? 45 : 0));
@@ -875,7 +765,7 @@ static void ApplyStyle(UILabel *label,LSGCState *s,CALayer *host,NSUInteger moti
         s.clockRim.hidden=!outlined;
         s.clockRim.zPosition=s.gradient.zPosition-0.01;
         if (s.clockRim.superlayer!=host) [host insertSublayer:s.clockRim below:s.gradient];
-    } else ApplyEdges(s,host);
+    } else ClearEdges(s);
     [CATransaction commit];
 }
 static void InstallMask(LSGCState *s,UIImage *image,BOOL native,CALayer *source,CALayer *host,UILabel *label) {
@@ -932,7 +822,7 @@ static NSString *DateSignature(UILabel *label) {
         label.attributedText ?: (id)label.text,label.font,NSStringFromCGSize(label.bounds.size),
         (long)label.numberOfLines,(long)label.textAlignment,(long)label.lineBreakMode,
         label.adjustsFontSizeToFitWidth,label.minimumScaleFactor,(long)label.baselineAdjustment];
-    if (!IsStandaloneTimeLabel(label)) return [base stringByAppendingFormat:@"|%@|%@",Config[@"edgeEnabled"],Config[@"edgeWidth"]];
+    if (!IsStandaloneTimeLabel(label)) return base;
     NSString *result=[base stringByAppendingFormat:@"|%@|%@|%@|%@|%.4f",
         Config[@"fontName"],Config[@"fontPath"],Config[@"clockSpacing"],Config[@"clockColonScale"],TextMaskScale(label)];
     // Outline outsets/weight rebuild only on text or settings changes.
@@ -998,6 +888,7 @@ static void Apply(UILabel *label) {
             state.gradient.mask=state.mask;
             objc_setAssociatedObject(label,&StateKey,state,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         }
+        ClearEdges(state); // Also purge legacy edges on cached date/lunar updates.
         if (clock) { state.clockHost=dateParent; state.hostSelection=hostReason; }
         if (!state.dateHost) { state.dateHost=[CALayer layer]; state.dateHost.name=@"LSGC.DateOverlay"; }
         NSString *signature=DateSignature(label);
@@ -1010,15 +901,6 @@ static void Apply(UILabel *label) {
                 if (!image || !HasAlpha(image)) { DiagApplyReturn=@"mask-no-ink"; if (clock) DiagCaptureFailure(label,DiagApplyReturn); RemoveOverlay(label); state.maskMode=@"遮罩无有效像素，保留系统文字"; return; }
                 state.maskHasInk=YES;
                 InstallMask(state,image,NO,nil,state.dateHost,label);
-                if (!clock) {
-                    if ([Config[@"edgeEnabled"] boolValue]) {
-                        CGImageRef ring=NULL,bevel=NULL;
-                        if (BuildEdgeImages(image,[Config[@"edgeWidth"] doubleValue],&ring,&bevel)) {
-                            InstallEdgeContents(state,ring,bevel,image.scale);
-                            CGImageRelease(ring); CGImageRelease(bevel);
-                        } else ClearEdges(state);
-                    } else ClearEdges(state);
-                }
                 // Replace the system glyph while preserving its layout and update path.
                 if (!clock && !state.hidOriginalLabel) {
                     state.originalAlpha=label.alpha;
@@ -1133,18 +1015,13 @@ static void Apply(UILabel *label) {
     }
     if (!image) { RemoveOverlay(label); s.maskMode=@"遮罩为空"; s.busy=NO; return; }
     NSUInteger ticket=++s.ticket;
-    CGFloat edgeWidth=Clamp([Config[@"edgeWidth"] doubleValue],0.5,4);
-    BOOL wantEdges=edges,wantGlass=glass;
+    BOOL wantGlass=glass;
     __weak UILabel *weak=label; LSGCState *state=s;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0), ^{
-        CGImageRef ring=NULL,bevel=NULL;
-        BOOL edgeOK=wantEdges && BuildEdgeImages(image,edgeWidth,&ring,&bevel);
         UIImage *tinted=wantGlass ? GlassTintMask(image) : image;
         dispatch_async(dispatch_get_main_queue(), ^{
             UILabel *strong=weak;
             if (!strong || state.ticket!=ticket) {
-                if (ring) CGImageRelease(ring);
-                if (bevel) CGImageRelease(bevel);
                 return;
             }
             @try {
@@ -1155,8 +1032,7 @@ static void Apply(UILabel *label) {
                     else RemoveOverlay(strong);
                 } else {
                     CALayer *installHost=(usedNative && nowOwner) ? nowOwner : strong.layer;
-                    if (edgeOK) InstallEdgeContents(state,ring,bevel,tinted.scale);
-                    else ClearEdges(state);
+                    ClearEdges(state);
                     InstallMask(state,tinted,usedNative && nowOwner!=nil,nowSource,installHost,strong);
                     state.signature=signature;
                     ApplyStyle(strong,state,installHost,nowMotion);
@@ -1165,8 +1041,6 @@ static void Apply(UILabel *label) {
                 RemoveOverlay(strong);
                 state.maskMode=[@"兼容异常：" stringByAppendingString:exception.name];
             } @finally {
-                if (ring) CGImageRelease(ring);
-                if (bevel) CGImageRelease(bevel);
                 if (state.ticket==ticket) state.busy=NO;
             }
             if (strong && state.dirty && state.ticket==ticket) { state.dirty=NO; Schedule(strong); }

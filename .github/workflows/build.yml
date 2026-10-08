@@ -72,6 +72,7 @@ jobs:
           /tmp/clock_render_test
           python3 scripts/verify_clock_render.py
           python3 scripts/verify_shared_palette_date.py
+          python3 scripts/verify_date_no_edges.py
           c++ -std=c++17 -Wall -Wextra -Werror tests/edge_coordinates_test.cpp -framework CoreGraphics -framework CoreFoundation -o /tmp/edge_coordinates_test
           /tmp/edge_coordinates_test
 

@@ -342,8 +342,8 @@ static UIColor *LSGCHexColor(NSString *hex) {
         if (![color getRed:&r green:&g blue:&b alpha:&a]) r=g=b=0.5;
         comps[i*4]=r; comps[i*4+1]=g; comps[i*4+2]=b; comps[i*4+3]=1;
     }
-    BOOL edges=[self prefNumber:@"edgeEnabled" fallback:0]>=0.5;
-    UIColor *edgeColor=LSGCHexColor([self prefString:@"edgeColor1" fallback:@"#D0FAFF"]);
+    BOOL edges=[self prefNumber:@"clockEdgeEnabled" fallback:1]>=0.5;
+    UIColor *edgeColor=LSGCHexColor([self prefString:@"clockEdgeColor" fallback:@"#FFFFFF"]);
     NSString *text=@"9:41";
     UIFont *font=[UIFont monospacedDigitSystemFontOfSize:MIN(56,size.height*0.7) weight:UIFontWeightBold];
     NSDictionary *fillAttrs=@{NSFontAttributeName:font,NSForegroundColorAttributeName:UIColor.whiteColor};
@@ -378,7 +378,7 @@ static UIColor *LSGCHexColor(NSString *hex) {
     UIGraphicsEndImageContext();
     UIGraphicsBeginImageContextWithOptions(size,NO,0);
     if (edges) {
-        CGFloat stroke=MAX(1.0,MIN(2.5,[self prefNumber:@"edgeWidth" fallback:1.5]));
+        CGFloat stroke=MAX(1.0,MIN(2.5,[self prefNumber:@"clockEdgeWidth" fallback:1.5]));
         NSDictionary *strokeAttrs=@{NSFontAttributeName:font,NSForegroundColorAttributeName:UIColor.clearColor,NSStrokeColorAttributeName:edgeColor,NSStrokeWidthAttributeName:@(stroke/font.pointSize*100.0)};
         [text drawAtPoint:origin withAttributes:strokeAttrs];
     }
@@ -521,15 +521,6 @@ static UIColor *LSGCHexColor(NSString *hex) {
     [alert addAction:[UIAlertAction actionWithTitle:@"关闭" style:UIAlertActionStyleCancel handler:nil]];
     [self presentViewController:alert animated:YES completion:nil];
 }
-- (void)resetEdges {
-    [self checkpoint];
-    NSArray *keys=@[@"edgeEnabled",@"edgePalette",@"edgeCore",@"edgeStrength",@"edgeWidth",@"edgeHighlight",@"edgeReveal",@"independentEdges",@"edgeColor1",@"edgeColor2",@"edgeColor3"];
-    for (NSString *key in keys) CFPreferencesSetAppValue((__bridge CFStringRef)key,NULL,Domain);
-    CFPreferencesAppSynchronize(Domain);
-    CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),Changed,NULL,NULL,true);
-    [[NSNotificationCenter defaultCenter] postNotificationName:LSGCSwatchesChanged object:nil];
-    [self reloadSpecifiers];
-}
 // Presets contain visual options only. Global enable, scope and mask compatibility
 // remain device-specific and are never overwritten when applying a palette.
 - (NSDictionary *)visualSchema {
@@ -613,7 +604,7 @@ static UIColor *LSGCHexColor(NSString *hex) {
     NSMutableArray *list=[self savedPalettes];
     if (list.count>=20) { [self paletteMessage:@"最多保存 20 个方案，请先删除不用的方案。"] ; return; }
     NSDictionary *snapshot=[self currentVisuals];
-    UIAlertController *a=[UIAlertController alertControllerWithTitle:@"保存当前效果" message:@"保存颜色、角度、位置、玻璃和彩边参数；不更改原插件。名称最多 32 字。" preferredStyle:UIAlertControllerStyleAlert];
+    UIAlertController *a=[UIAlertController alertControllerWithTitle:@"保存当前效果" message:@"保存颜色、角度、位置和主时间描边参数；不更改原插件。名称最多 32 字。" preferredStyle:UIAlertControllerStyleAlert];
     [a addTextFieldWithConfigurationHandler:^(UITextField *field) { field.placeholder=@"例如：紫色壁纸"; }];
     __weak UIAlertController *weakAlert=a;
     [a addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
@@ -814,7 +805,7 @@ static UIColor *LSGCHexColor(NSString *hex) {
 - (void)applyBuiltinStyle {
     NSDictionary *styles=[self builtinStyles];
     NSArray *names=@[@"清晨",@"正午",@"夜紫",@"粉金",@"单色玻璃",@"海盐",@"晚霞",@"冰川"];
-    UIAlertController *sheet=[UIAlertController alertControllerWithTitle:@"内置风格" message:@"写入五种颜色和彩边颜色。不修改总开关、玻璃浓度和角度。" preferredStyle:UIAlertControllerStyleActionSheet];
+    UIAlertController *sheet=[UIAlertController alertControllerWithTitle:@"内置风格" message:@"写入共用五种颜色。不修改总开关、玻璃浓度和角度。" preferredStyle:UIAlertControllerStyleActionSheet];
     for (NSString *name in names) {
         [sheet addAction:[UIAlertAction actionWithTitle:name style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
             (void)action;

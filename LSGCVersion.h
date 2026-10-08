@@ -1,2 +1,2 @@
 #pragma once
-#define LSGCVersionString @"2.0.7-shared-palette-date"
+#define LSGCVersionString @"2.0.8-date-gradient-only"

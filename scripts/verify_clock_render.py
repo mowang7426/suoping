@@ -16,7 +16,7 @@ assert 'renderInContext' not in glyph, 'main clock must not use clipped UILabel 
 assert 'if (clock) return SnapshotClockGlyphs(label,mirror.attributedText,scale);' in s
 style=body('static void ApplyStyle(', 'static void InstallMask(')
 assert 'LSGCClockFillOpacity' in style and 'if (standaloneTime) c=[c colorWithAlphaComponent:1]' in style
-assert 'if (!standaloneTime && [Config[@"edgeEnabled"]' in style
+assert 'Config[@"edgeEnabled"]' not in style and 'Config[@"edgeCore"]' not in style
 clock=style[style.index('if (standaloneTime) {'):]
 for marker in ['ClearEdges(s)','clockEdgeEnabled','clockEdgeStrength','clockEdgeColor',
                'host.masksToBounds=NO','s.gradient.masksToBounds=NO','insertSublayer:s.clockRim below:s.gradient']:
@@ -27,7 +27,8 @@ assert 'IsStandaloneTimeLabel(label) ? s.clockCanvasSize : label.bounds.size' in
 apply=body('static void Apply(UILabel *label) {','static void InstallHooks(void) {')
 assert 'clock ? state.clockCanvasSize : label.bounds.size' in apply
 assert 'available/visible.size.width' in apply
-assert 'if (!clock)' in apply and 'BuildEdgeImages(image' in apply
+assert 'ClearEdges(state); // Also purge legacy edges' in apply
+assert 'BuildEdgeImages' not in s and 'InstallEdgeContents' not in s
 ready=body('static BOOL ClockReplacementReady(UILabel *label) {','static void Apply(UILabel *label) {')
 assert 'outlineReady' in ready and 's.clockRim.superlayer==s.dateHost' in ready
 remove=body('static void RemoveOverlay(', '// Render at the final clock magnification')
