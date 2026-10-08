@@ -53,7 +53,8 @@ static NSString *FontStatus;
 static unsigned long long DiagLayout, DiagMove, DiagDraw, DiagMainDraw, DiagNative, DiagSuppress;
 static unsigned long long DiagSchedule, DiagApply, DiagInstall;
 static NSUInteger DiagDrawDepth;
-static NSString *DiagScheduleReturn, *DiagApplyReturn;
+static NSString *DiagScheduleReturn, *DiagApplyReturn, *DiagMainApplyReturn;
+static unsigned long long DiagMainApply;
 static NSDictionary *DiagMask, *DiagFailure;
 static NSMutableDictionary<NSString *, NSValue *> *DiagOriginals, *DiagExpected;
 static void DiagInc(unsigned long long *value) {
@@ -74,6 +75,8 @@ static NSString *DiagReport(void);
 @interface LSGCState : NSObject
 @property(nonatomic,strong) CAGradientLayer *gradient;
 @property(nonatomic,strong) CALayer *dateHost;
+@property(nonatomic,weak) UIView *clockHost;
+@property(nonatomic,copy) NSString *hostSelection;
 @property(nonatomic,strong) CALayer *mask;
 @property(nonatomic,strong) CALayer *edgeHost;
 @property(nonatomic,strong) CAGradientLayer *edgeTint;
@@ -212,11 +215,58 @@ static BOOL IsStandaloneTimeLabel(UILabel *label) {
         names[count++]=class_getName(view.class);
     return LSGCMainClockChain(names,count);
 }
+// Only a direct, exact UIView time-source wrapper may be bypassed. A real
+// hidden ancestor, a faded label, or any other low-alpha view still fails.
+// Native draw callbacks can run while this source wrapper is transparent;
+// the visible system clock may be a separately composited/cached display surface.
+// A draw hit is not proof that this UIView branch itself is visible, nor that
+// an ordinary descendant CALayer can render there. Only the chosen host is visible.
+static UIView *ClockOverlayParent(UILabel *label, NSString **reason) {
+    if (!IsStandaloneTimeLabel(label) || !label.window) { if (reason) *reason=@"identity-or-window"; return nil; }
+    UIView *wrapper=label.superview;
+    BOOL bypass=NO;
+    BOOL timeAbove=NO;
+    for (UIView *v=wrapper.superview; v; v=v.superview) {
+        if ([NSStringFromClass(v.class) isEqualToString:@"CSProminentTimeView"]) timeAbove=YES;
+        if ([NSStringFromClass(v.class) isEqualToString:@"CSProminentDisplayView"]) break;
+    }
+    bypass=LSGCAllowSourceWrapper(true, wrapper && wrapper.class==UIView.class, timeAbove, wrapper.hidden, wrapper.alpha);
+    for (UIView *v=label; v; v=v.superview) {
+        if (v.hidden || v.layer.hidden || ((v.alpha<0.01 || v.layer.opacity<0.01) && !(bypass && v==wrapper))) {
+            if (reason) *reason=[@"hidden-or-low-alpha:" stringByAppendingString:NSStringFromClass(v.class)]; return nil;
+        }
+    }
+    UIView *host=bypass ? wrapper.superview : label;
+    for (UIView *v=label; v && v!=host; v=v.superview) {
+        if (!CATransform3DIsAffine(v.layer.transform) || !CATransform3DIsAffine(v.layer.sublayerTransform)) {
+            if (reason) *reason=@"unsupported-source-3d-transform"; return nil;
+        }
+    }
+    if (!host || !Visible(host)) { if (reason) *reason=@"no-visible-host"; return nil; }
+    CGRect source=[label convertRect:label.bounds toView:label.window];
+    if (CGRectIsEmpty(source) || !isfinite(source.origin.x) || !isfinite(source.origin.y) ||
+        !isfinite(source.size.width) || !isfinite(source.size.height) || !CGRectIntersectsRect(source,label.window.bounds)) {
+        if (reason) *reason=@"source-off-screen"; return nil;
+    }
+    if (reason) *reason=bypass ? @"alpha-zero-time-source-wrapper/sibling-host" : @"native-label-host";
+    return host;
+}
+static BOOL ClockHostVisible(UILabel *label, LSGCState *s) {
+    UIView *host=ClockOverlayParent(label,NULL);
+    if (!host || host!=s.clockHost || s.dateHost.hidden || s.gradient.hidden) return NO;
+    CGFloat effectiveOpacity=1;
+    for (CALayer *layer=s.dateHost; layer; layer=layer.superlayer) {
+        CALayer *shown=(CALayer *)layer.presentationLayer ?: layer;
+        if (layer.hidden || shown.hidden || layer.opacity<0.01 || shown.opacity<0.01) return NO;
+        effectiveOpacity*=MIN(layer.opacity,shown.opacity);
+    }
+    return effectiveOpacity*s.gradient.opacity>=0.01;
+}
 static UIView *DateOverlayParent(UILabel *label) {
     // A sibling of the actual time label inherits every native ancestor
     // transform/animation (notification reflow, swipe and clock shrink).
     // Do not move time out of its animated hierarchy as we do for date vibrancy.
-    if (IsStandaloneTimeLabel(label)) return label.superview;
+    if (IsStandaloneTimeLabel(label)) return nil; // Main time never enters the date-only route.
     BOOL subtitle=NO;
     UIView *dateView=nil, *parent=nil;
     for (UIView *view=label.superview;view;view=view.superview) {
@@ -237,7 +287,7 @@ static void Schedule(UILabel *label) {
     if (!Hooked && IsStandaloneTimeLabel(label)) InstallHooks();
     BOOL tracked=objc_getAssociatedObject(label,&StateKey)!=nil;
     BOOL glass=GlassClass && [label isKindOfClass:GlassClass];
-    if (!tracked && !glass && !DateOverlayParent(label)) { DiagScheduleReturn=@"not-tracked/glass/date-or-main-clock"; return; }
+    if (!tracked && !glass && !IsStandaloneTimeLabel(label) && !DateOverlayParent(label)) { DiagScheduleReturn=@"not-tracked/glass/date-or-main-clock"; return; }
     if (objc_getAssociatedObject(label,&PendingKey)) { DiagScheduleReturn=@"already-pending"; return; }
     DiagScheduleReturn=@"queued";
     objc_setAssociatedObject(label,&PendingKey,@YES,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -767,20 +817,20 @@ static NSString *DateSignature(UILabel *label) {
         Config[@"fontName"],Config[@"fontPath"],Config[@"clockSpacing"],Config[@"clockColonScale"],TextMaskScale(label)];
 }
 // Suppress only the glyph draw, never UIView alpha/hidden. The overlay lives
-// inside the native label, so native ancestor AND label animations run once.
+// in a verified visible host; native ancestor transforms are inherited once.
 static BOOL ClockReplacementReady(UILabel *label) {
     LSGCState *s=objc_getAssociatedObject(label,&StateKey);
     if (!Hooked || !LabelHooked || !s || !s.clockCommitted || !IsStandaloneTimeLabel(label)) return NO;
     NSString *name=[Config[@"fontName"] isKindOfClass:NSString.class] ? Config[@"fontName"] : @"";
     BOOL fontReady=!name.length || (ImportedFont!=nil) ||
         (![Config[@"fontPath"] length] && [UIFont fontWithName:name size:label.font.pointSize]!=nil);
-    BOOL attached=s.dateHost.superlayer==label.layer && s.gradient.superlayer==s.dateHost &&
+    BOOL attached=s.clockHost && s.dateHost.superlayer==s.clockHost.layer && s.gradient.superlayer==s.dateHost &&
         s.gradient.mask==s.mask && s.mask.contents!=nil;
     CGRect rect=attached && label.window ? [s.dateHost convertRect:s.dateHost.bounds toLayer:label.window.layer] : CGRectZero;
     BOOL onScreen=!CGRectIsEmpty(rect) && !CGRectIsInfinite(rect) && !CGRectIsNull(rect) &&
         isfinite(rect.origin.x) && isfinite(rect.origin.y) && isfinite(rect.size.width) && isfinite(rect.size.height) &&
         CGRectIntersectsRect(rect,label.window.bounds);
-    for (UIView *v=label; onScreen && v; v=v.superview) {
+    for (UIView *v=s.clockHost; onScreen && v; v=v.superview) {
         if (v.clipsToBounds) {
             CGRect clip=[v convertRect:v.bounds toView:label.window];
             rect=CGRectIntersection(rect,clip); onScreen=!CGRectIsEmpty(rect) && !CGRectIsNull(rect);
@@ -789,7 +839,7 @@ static BOOL ClockReplacementReady(UILabel *label) {
     CGFloat colorAlpha=0;
     for (id color in s.gradient.colors) colorAlpha=MAX(colorAlpha,CGColorGetAlpha((__bridge CGColorRef)color));
     LSGCClockReadiness ready={ [Config[@"enabled"] boolValue], fontReady, s.maskHasInk,
-        attached, Visible(label), onScreen, [s.signature isEqualToString:DateSignature(label)],
+        attached, ClockHostVisible(label,s), onScreen, [s.signature isEqualToString:DateSignature(label)],
         s.gradient.opacity*s.dateHost.opacity*colorAlpha, (bool)(Hooked && LabelHooked) };
     return LSGCCanReplaceClock(ready);
 }
@@ -799,7 +849,13 @@ static void Apply(UILabel *label) {
     [Labels addObject:label];
     BOOL isGlassLabel=GlassClass && [label isKindOfClass:GlassClass];
     BOOL clock=IsStandaloneTimeLabel(label);
-    UIView *dateParent=clock ? label : DateOverlayParent(label);
+    if (clock) { DiagInc(&DiagMainApply); DiagMainApplyReturn=@"entered"; }
+    NSString *hostReason=nil;
+    UIView *dateParent=clock ? ClockOverlayParent(label,&hostReason) : DateOverlayParent(label);
+    if (clock && !dateParent) {
+        LSGCState *failed=objc_getAssociatedObject(label,&StateKey); failed.hostSelection=hostReason;
+        DiagApplyReturn=hostReason; DiagCaptureFailure(label,DiagApplyReturn); RemoveOverlay(label); return;
+    }
     if (clock && (!Hooked || !label.superview)) { DiagApplyReturn=!Hooked ? @"hook-not-ready" : @"no-superview"; DiagCaptureFailure(label,DiagApplyReturn); RemoveOverlay(label); return; }
     if (!isGlassLabel && dateParent) {
         NSString *displayText=label.text ?: label.attributedText.string;
@@ -817,6 +873,7 @@ static void Apply(UILabel *label) {
             state.gradient.mask=state.mask;
             objc_setAssociatedObject(label,&StateKey,state,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         }
+        if (clock) { state.clockHost=dateParent; state.hostSelection=hostReason; }
         if (!state.dateHost) { state.dateHost=[CALayer layer]; state.dateHost.name=@"LSGC.DateOverlay"; }
         NSString *signature=DateSignature(label);
         @try {
@@ -853,24 +910,23 @@ static void Apply(UILabel *label) {
                 state.dateHost.position=CGPointMake(CGRectGetMidX(frame)+offsetX,CGRectGetMidY(frame)+offsetY);
                 state.dateHost.transform=CATransform3DMakeScale(sx,sy,1);
                 if (clock) {
-                    // Local coordinates: do not copy label.transform or convert its
-                    // transformed frame back into a second scale.
-                    state.dateHost.bounds=(CGRect){CGPointZero,label.bounds.size};
+                    // Map basis vectors into the chosen host, retaining source
+                    // rotation/shear exactly once; host inherits all higher lock-screen transforms.
+                    CGPoint origin=[label convertPoint:CGPointZero toView:dateParent];
+                    CGPoint x=[label convertPoint:CGPointMake(1,0) toView:dateParent];
+                    CGPoint y=[label convertPoint:CGPointMake(0,1) toView:dateParent];
+                    CGPoint center=[label convertPoint:CGPointMake(CGRectGetMidX(label.bounds)+offsetX,CGRectGetMidY(label.bounds)+offsetY) toView:dateParent];
                     state.dateHost.anchorPoint=CGPointMake(.5,.5);
-                    state.dateHost.position=CGPointMake(CGRectGetMidX(label.bounds)+offsetX,CGRectGetMidY(label.bounds)+offsetY);
-                    state.dateHost.transform=CATransform3DMakeScale(userScale*widthScale,userScale*heightScale,1);
+                    state.dateHost.position=center;
+                    state.dateHost.transform=CATransform3DMakeAffineTransform(CGAffineTransformMake(
+                        (x.x-origin.x)*userScale*widthScale,(x.y-origin.y)*userScale*widthScale,
+                        (y.x-origin.x)*userScale*heightScale,(y.y-origin.y)*userScale*heightScale,0,0));
                 }
                 if (state.dateHost.superlayer!=dateParent.layer) [dateParent.layer addSublayer:state.dateHost];
                 UpdateParallax();
                 ApplyStyle(label,state,state.dateHost,MotionBits(dateParent)|8);
             } @finally { [CATransaction commit]; }
             if (clock) {
-                // UILabel may clip its own bounds. Permit the enlarged local
-                // overlay without changing any ancestor's clipping or layout.
-                if (!state.didUnclipClock) {
-                    state.originalClipsToBounds=label.clipsToBounds;
-                    state.didUnclipClock=YES; label.clipsToBounds=NO;
-                }
                 state.clockCommitted=YES;
                 if (!ClockReplacementReady(label)) {
                     DiagApplyReturn=@"readiness-rejected"; DiagCaptureFailure(label,DiagApplyReturn);
@@ -879,7 +935,8 @@ static void Apply(UILabel *label) {
                 [label setNeedsDisplay];
             }
             DiagApplyReturn=clock ? @"main-clock-committed" : @"date-only";
-            state.maskMode=clock ? @"原生时间层内渐变（安全提交）" : @"日期容器外渐变";
+            if (clock) DiagMainApplyReturn=DiagApplyReturn;
+            state.maskMode=clock ? @"主时间独立宿主渐变（安全提交）" : @"日期容器外渐变";
         } @catch (NSException *exception) {
             DiagApplyReturn=[@"exception:" stringByAppendingString:exception.name]; if (clock) DiagCaptureFailure(label,DiagApplyReturn);
             RemoveOverlay(label); state.maskMode=[@"日期渲染异常：" stringByAppendingString:exception.name];

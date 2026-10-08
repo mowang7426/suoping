@@ -23,8 +23,8 @@ assert 'IsStandaloneTimeLabel(label) ? Clamp([Config[@"clockOffsetY"]' in source
 assert 'CGFloat sy=frame.size.height/label.bounds.size.height*userScale*heightScale' in source
 assert 'clockHeight' not in source[source.index('static NSString *DateSignature'):source.index('static void Apply')]
 assert 'LSGCLabeledSliderCell.class' in (root/'Preferences/LSGCRootListController.m').read_text()
-assert (root/'control').read_text().split('Version: ',1)[1].splitlines()[0] == '2.0.2'
-assert '#define LSGCVersionString @"2.0.2-standalone-diagnostics"' in (root/'LSGCVersion.h').read_text()
+assert (root/'control').read_text().split('Version: ',1)[1].splitlines()[0] == '2.0.3'
+assert '#define LSGCVersionString @"2.0.3-visible-clock-host"' in (root/'LSGCVersion.h').read_text()
 # Event-driven clock geometry and process-local imported fonts.
 font=(root/'LSGCFont.h').read_text()
 prefs=(root/'Preferences/LSGCRootListController.m').read_text()
@@ -34,10 +34,10 @@ assert 'fontPath' in prefs and 'NSUUID.UUID.UUIDString' in prefs
 assert 'RegisterUserFont();' in source[source.index('static void LoadConfig'):source.index('static UIColor *Color')]
 assert 'CSProminentDisplayView' in source and '_UIAnimatingLabel' in source
 assert 'class_getInstanceMethod(cls,sel)' in source and 'MSHookMessageEx(cls,sel,hook,&original)' in source
-assert 'if (IsStandaloneTimeLabel(label)) return label.superview;' in source
+assert 'if (IsStandaloneTimeLabel(label)) return nil;' in source
 assert 'CATransform3DScale(label.layer.transform' not in source
-assert 'state.dateHost.transform=CATransform3DMakeScale(userScale*widthScale,userScale*heightScale,1)' in source
-assert 'UIView *dateParent=clock ? label : DateOverlayParent(label)' in source
+assert 'state.dateHost.transform=CATransform3DMakeAffineTransform' in source
+assert 'UIView *dateParent=clock ? ClockOverlayParent(label,&hostReason) : DateOverlayParent(label)' in source
 assert 'mirror.contentScaleFactor=MAX(1,scale)' in source
 assert '4096.0*2048.0' in source and 'TextMaskScale(label)' in source
 assert 'CADisplayLink' not in source and 'scheduledTimer' not in source

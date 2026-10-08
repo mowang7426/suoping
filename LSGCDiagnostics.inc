@@ -19,11 +19,11 @@ static NSDictionary *DiagGate(UILabel *label) {
     NSString *name=[Config[@"fontName"] isKindOfClass:NSString.class] ? Config[@"fontName"] : @"";
     BOOL identity=IsStandaloneTimeLabel(label);
     BOOL fontReady=!name.length || ImportedFont!=nil || (![Config[@"fontPath"] length] && [UIFont fontWithName:name size:label.font.pointSize]!=nil);
-    BOOL attached=s && s.dateHost && s.gradient && s.mask && s.dateHost.superlayer==label.layer && s.gradient.superlayer==s.dateHost && s.gradient.mask==s.mask && s.mask.contents!=nil;
+    BOOL attached=s && s.dateHost && s.gradient && s.mask && s.clockHost && s.dateHost.superlayer==s.clockHost.layer && s.gradient.superlayer==s.dateHost && s.gradient.mask==s.mask && s.mask.contents!=nil;
     CGRect rect=attached && label.window ? [s.dateHost convertRect:s.dateHost.bounds toLayer:label.window.layer] : CGRectZero;
     BOOL onScreen=!CGRectIsEmpty(rect) && !CGRectIsInfinite(rect) && !CGRectIsNull(rect) &&
         isfinite(rect.origin.x) && isfinite(rect.origin.y) && isfinite(rect.size.width) && isfinite(rect.size.height) && CGRectIntersectsRect(rect,label.window.bounds);
-    for (UIView *v=label; onScreen && v; v=v.superview) {
+    for (UIView *v=s.clockHost; onScreen && v; v=v.superview) {
         if (v.clipsToBounds) { rect=CGRectIntersection(rect,[v convertRect:v.bounds toView:label.window]); onScreen=!CGRectIsEmpty(rect) && !CGRectIsNull(rect); }
     }
     CGFloat colorAlpha=0;
@@ -31,7 +31,7 @@ static NSDictionary *DiagGate(UILabel *label) {
     CGFloat opacity=s.gradient.opacity*s.dateHost.opacity*colorAlpha;
     NSMutableDictionary *gate=[@{@"identity":@(identity),@"hookReady":@(Hooked && LabelHooked),@"committed":@(s.clockCommitted),
         @"enabled":@([Config[@"enabled"] boolValue]),@"fontReady":@(fontReady),@"maskHasInk":@(s.maskHasInk),@"attached":@(attached),
-        @"visible":@(Visible(label)),@"onScreen":@(onScreen),@"signatureCurrent":@([s.signature isEqualToString:DateSignature(label)]),@"opacity":@(opacity)} mutableCopy];
+        @"visible":@(ClockHostVisible(label,s)),@"onScreen":@(onScreen),@"signatureCurrent":@([s.signature isEqualToString:DateSignature(label)]),@"opacity":@(opacity)} mutableCopy];
     NSMutableArray *failed=[NSMutableArray array];
     for (NSString *key in @[@"identity",@"hookReady",@"committed",@"enabled",@"fontReady",@"maskHasInk",@"attached",@"visible",@"onScreen",@"signatureCurrent"])
         if (![gate[key] boolValue]) [failed addObject:key];
@@ -39,9 +39,15 @@ static NSDictionary *DiagGate(UILabel *label) {
     gate[@"failedReasons"]=failed;
     gate[@"label"]=[NSString stringWithFormat:@"%@ %p",NSStringFromClass(label.class),label];
     gate[@"geometry"]=DiagGeometry(label,s.dateHost);
+    NSString *selection=nil; UIView *host=ClockOverlayParent(label,&selection);
+    gate[@"hostSelection"]=s.hostSelection ?: selection ?: @"not-selected";
+    gate[@"hostClass"]=host ? NSStringFromClass(host.class) : @"none";
+    gate[@"hostWindowRect"]=host ? NSStringFromCGRect([host convertRect:host.bounds toView:label.window]) : @"none";
+    gate[@"hostFailureReason"]=host ? @"none" : (selection ?: @"unknown");
     return gate;
 }
 static void DiagCaptureFailure(UILabel *label, NSString *reason) {
+    DiagMainApplyReturn=reason;
     NSMutableDictionary *gate=[DiagGate(label) mutableCopy];
     gate[@"earlyReturn"]=reason ?: @"unknown";
     gate[@"capturedBeforeRemoval"]=@YES;
@@ -106,6 +112,7 @@ static NSString *DiagReport(void) {
     [lines addObject:@"\n\n=== RealClockDiagnostics v1 ===\n计数为进程累计；主时间 draw 排除 SnapshotText 镜像绘制及 super 链重复调用。安全门通过/附加遮罩不等于真机视觉成功。\n日期渐变、通知时间、充电预估一律不能计入主时间成功。"];
     [lines addObject:[NSString stringWithFormat:@"InstallHooks=%llu Hooked=%d LabelHooked=%d NativeClassesLoaded=%d\nhookCalls layout=%llu didMove=%llu draw=%llu\nmainClockDraw=%llu nativePass=%llu customSuppress=%llu\nSchedule=%llu lastEarlyReturn=%@\nApply=%llu lastEarlyReturn=%@",
         DiagInstall,Hooked,LabelHooked,NativeClassesLoaded,DiagLayout,DiagMove,DiagDraw,DiagMainDraw,DiagNative,DiagSuppress,DiagSchedule,DiagScheduleReturn?:@"none",DiagApply,DiagApplyReturn?:@"none"]];
+    [lines addObject:[NSString stringWithFormat:@"mainClockApply=%llu lastMainClockApplyReturn=%@ (independent of date-only)",DiagMainApply,DiagMainApplyReturn ?: @"never-attempted"]];
     for (NSString *name in @[@"UIView",@"UILabel",@"SBFLockScreenDateView",@"CSProminentTimeView",@"CSProminentDisplayView",@"_UIAnimatingLabel"]) {
         Class cls=NSClassFromString(name);
         NSArray *selectors=[name isEqualToString:@"UIView"] ? @[@"didMoveToWindow"] : ([cls isSubclassOfClass:UILabel.class] || [name isEqualToString:@"_UIAnimatingLabel"] ? @[@"layoutSubviews",@"didMoveToWindow",@"drawTextInRect:",@"setText:",@"setAttributedText:"] : @[@"layoutSubviews",@"didMoveToWindow"]);

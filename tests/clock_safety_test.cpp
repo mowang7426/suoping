@@ -3,6 +3,13 @@
 #include <cmath>
 #include <iostream>
 int main() {
+    assert(LSGCAllowSourceWrapper(true,true,true,false,0));
+    assert(!LSGCAllowSourceWrapper(true,false,true,false,0));
+    assert(!LSGCAllowSourceWrapper(true,true,false,false,0));
+    assert(!LSGCAllowSourceWrapper(true,true,true,true,0));
+    assert(!LSGCAllowSourceWrapper(true,true,true,false,0.005));
+    assert(!LSGCAllowSourceWrapper(false,true,true,false,0));
+    assert(!LSGCAllowSourceWrapper(true,true,true,false,NAN));
     for (unsigned bits=0;bits<256;bits++) {
         LSGCClockReadiness r={bool(bits&1),bool(bits&2),bool(bits&4),bool(bits&8),bool(bits&16),bool(bits&32),bool(bits&64),0.32,bool(bits&128)};
         assert(LSGCCanReplaceClock(r)==(bits==255));
