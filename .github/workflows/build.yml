@@ -64,6 +64,7 @@ jobs:
           c++ -std=c++17 -Wall -Wextra -Werror tests/clock_scope_test.cpp -o /tmp/clock_scope_test
           /tmp/clock_scope_test
           python3 scripts/verify_clock_startup.py
+          python3 scripts/verify_clock_diagnostics.py
 
       - name: Verify settings schema and clock geometry isolation
         run: python3 scripts/verify_settings.py

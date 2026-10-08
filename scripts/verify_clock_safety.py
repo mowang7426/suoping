@@ -17,7 +17,7 @@ for contract in ['ImportedFont', 's.maskHasInk', 's.dateHost.superlayer==label.l
                  'CGRectIntersectsRect', 'v.clipsToBounds', 'Visible(label)',
                  'DateSignature(label)', 'CGColorGetAlpha', 'LSGCCanReplaceClock(ready)']:
     assert contract in ready, contract
-assert s.count('if (!Rendering && ClockReplacementReady((UILabel *)obj)) return;')==2
+assert s.count('if (!Rendering && ClockReplacementReady((UILabel *)obj)) { if (main) DiagInc(&DiagSuppress); return; }')==2
 assert 's.clockCommitted=NO; [label setNeedsDisplay]' in s
 assert 'class_copyMethodList(cls,&count)' in s
 assert '@"setTransform:",@"setBounds:",@"setCenter:"' not in s

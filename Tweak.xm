@@ -49,6 +49,27 @@ static void InstallClockHooks(void);
 static UIFont *ImportedFont;
 static NSString *ImportedPath;
 static NSString *FontStatus;
+// Bounded diagnostics: scalar totals and one last snapshot, no frame sampling.
+static unsigned long long DiagLayout, DiagMove, DiagDraw, DiagMainDraw, DiagNative, DiagSuppress;
+static unsigned long long DiagSchedule, DiagApply, DiagInstall;
+static NSUInteger DiagDrawDepth;
+static NSString *DiagScheduleReturn, *DiagApplyReturn;
+static NSDictionary *DiagMask, *DiagFailure;
+static NSMutableDictionary<NSString *, NSValue *> *DiagOriginals, *DiagExpected;
+static void DiagInc(unsigned long long *value) {
+    unsigned long long old=__atomic_load_n(value,__ATOMIC_RELAXED);
+    while (old!=~0ULL && !__atomic_compare_exchange_n(value,&old,old+1,NO,__ATOMIC_RELAXED,__ATOMIC_RELAXED)) {}
+}
+static void DiagRememberIMP(Class cls, SEL sel, IMP original, IMP hook) {
+    if (!DiagOriginals) { DiagOriginals=[NSMutableDictionary dictionary]; DiagExpected=[NSMutableDictionary dictionary]; }
+    NSString *key=[NSString stringWithFormat:@"%@/%@",NSStringFromClass(cls),NSStringFromSelector(sel)];
+    DiagOriginals[key]=[NSValue valueWithPointer:(const void *)original];
+    DiagExpected[key]=[NSValue valueWithPointer:(const void *)hook];
+}
+static void DiagCaptureFailure(UILabel *label, NSString *reason);
+static void DiagCaptureMask(UIImage *image, CGSize requested, CGFloat scale);
+static NSString *DiagReport(void);
+
 
 @interface LSGCState : NSObject
 @property(nonatomic,strong) CAGradientLayer *gradient;
@@ -209,12 +230,16 @@ static UIView *DateOverlayParent(UILabel *label) {
     return nil;
 }
 static void Schedule(UILabel *label) {
-    if (!NSThread.isMainThread || Rendering || !StartupComplete) return;
+    DiagInc(&DiagSchedule);
+    if (!NSThread.isMainThread || Rendering || !StartupComplete) {
+        DiagScheduleReturn=!NSThread.isMainThread ? @"not-main-thread" : (Rendering ? @"snapshot-rendering" : @"startup-incomplete"); return;
+    }
     if (!Hooked && IsStandaloneTimeLabel(label)) InstallHooks();
     BOOL tracked=objc_getAssociatedObject(label,&StateKey)!=nil;
     BOOL glass=GlassClass && [label isKindOfClass:GlassClass];
-    if (!tracked && !glass && !DateOverlayParent(label)) return;
-    if (objc_getAssociatedObject(label,&PendingKey)) return;
+    if (!tracked && !glass && !DateOverlayParent(label)) { DiagScheduleReturn=@"not-tracked/glass/date-or-main-clock"; return; }
+    if (objc_getAssociatedObject(label,&PendingKey)) { DiagScheduleReturn=@"already-pending"; return; }
+    DiagScheduleReturn=@"queued";
     objc_setAssociatedObject(label,&PendingKey,@YES,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     __weak UILabel *weak=label;
     dispatch_async(dispatch_get_main_queue(), ^{
@@ -323,6 +348,7 @@ static UIImage *SnapshotText(UILabel *label,CGFloat scale) {
         // can apply vertical alignment twice and clip oversized clock fonts.
         [mirror.layer renderInContext:context.CGContext];
     }];
+    if (clock) DiagCaptureMask(image,label.bounds.size,scale);
     return HasAlpha(image) ? image : nil;
 }
 // Preserve original highlights by fading tint at the glyph boundary.
@@ -768,18 +794,23 @@ static BOOL ClockReplacementReady(UILabel *label) {
     return LSGCCanReplaceClock(ready);
 }
 static void Apply(UILabel *label) {
-    if (!NSThread.isMainThread) return;
+    DiagInc(&DiagApply); DiagApplyReturn=@"entered";
+    if (!NSThread.isMainThread) { DiagApplyReturn=@"not-main-thread"; return; }
     [Labels addObject:label];
     BOOL isGlassLabel=GlassClass && [label isKindOfClass:GlassClass];
     BOOL clock=IsStandaloneTimeLabel(label);
     UIView *dateParent=clock ? label : DateOverlayParent(label);
-    if (clock && (!Hooked || !label.superview)) { RemoveOverlay(label); return; }
+    if (clock && (!Hooked || !label.superview)) { DiagApplyReturn=!Hooked ? @"hook-not-ready" : @"no-superview"; DiagCaptureFailure(label,DiagApplyReturn); RemoveOverlay(label); return; }
     if (!isGlassLabel && dateParent) {
         NSString *displayText=label.text ?: label.attributedText.string;
         BOOL allowDate=TimeText(displayText) || [Config[@"dateGradient"] boolValue];
         if (![Config[@"enabled"] boolValue] || !allowDate || !Visible(dateParent) ||
             !(label.text.length || label.attributedText.length) || label.bounds.size.width<1 || label.bounds.size.height<1 ||
-            label.bounds.size.width>2048 || label.bounds.size.height>2048) { RemoveOverlay(label); return; }
+            label.bounds.size.width>2048 || label.bounds.size.height>2048) {
+            DiagApplyReturn=![Config[@"enabled"] boolValue] ? @"disabled" : (!allowDate ? @"date-disabled" : (!Visible(dateParent) ? @"invisible" : (!(label.text.length || label.attributedText.length) ? @"empty-text" : @"invalid-bounds")));
+            if (clock) DiagCaptureFailure(label,DiagApplyReturn);
+            RemoveOverlay(label); return;
+        }
         LSGCState *state=objc_getAssociatedObject(label,&StateKey);
         if (!state) {
             state=[LSGCState new]; state.gradient=[CAGradientLayer layer]; state.mask=[CALayer layer];
@@ -793,7 +824,7 @@ static void Apply(UILabel *label) {
                 UIImage *image=nil;
                 @try { Rendering=YES; image=SnapshotText(label,TextMaskScale(label)); }
                 @finally { Rendering=NO; }
-                if (!image || !HasAlpha(image)) { RemoveOverlay(label); state.maskMode=@"遮罩无有效像素，保留系统文字"; return; }
+                if (!image || !HasAlpha(image)) { DiagApplyReturn=@"mask-no-ink"; if (clock) DiagCaptureFailure(label,DiagApplyReturn); RemoveOverlay(label); state.maskMode=@"遮罩无有效像素，保留系统文字"; return; }
                 state.maskHasInk=YES;
                 InstallMask(state,image,NO,nil,state.dateHost,label);
                 // Replace the system glyph while preserving its layout and update path.
@@ -842,18 +873,22 @@ static void Apply(UILabel *label) {
                 }
                 state.clockCommitted=YES;
                 if (!ClockReplacementReady(label)) {
+                    DiagApplyReturn=@"readiness-rejected"; DiagCaptureFailure(label,DiagApplyReturn);
                     RemoveOverlay(label); state.maskMode=@"时间替换未就绪，保留系统时间"; return;
                 }
                 [label setNeedsDisplay];
             }
+            DiagApplyReturn=clock ? @"main-clock-committed" : @"date-only";
             state.maskMode=clock ? @"原生时间层内渐变（安全提交）" : @"日期容器外渐变";
         } @catch (NSException *exception) {
+            DiagApplyReturn=[@"exception:" stringByAppendingString:exception.name]; if (clock) DiagCaptureFailure(label,DiagApplyReturn);
             RemoveOverlay(label); state.maskMode=[@"日期渲染异常：" stringByAppendingString:exception.name];
         }
         return;
     }
     // Standalone mode never touches Liquidify labels or their private masks.
     BOOL scoped=![Config[@"strictScope"] boolValue] || InLockScreen(label);
+    DiagApplyReturn=@"not-eligible-standalone-clock-or-date";
     RemoveOverlay(label);
     return;
     if (![Config[@"enabled"] boolValue] || !Visible(label) || !GradientText(label.text ?: label.attributedText.string) ||
@@ -931,6 +966,7 @@ static void Apply(UILabel *label) {
     });
 }
 static void InstallHooks(void) {
+    DiagInc(&DiagInstall);
     // Standalone implementation: no Liquidify class lookup or private hook.
     InstallLabelHooks(); InstallClockHooks();
     NativeClassesLoaded=NSClassFromString(@"_UIAnimatingLabel") &&
@@ -964,7 +1000,7 @@ static void InstallHooks(void) {
 }
 static void (*OrigViewMove)(id,SEL);
 static void ViewMove(id obj,SEL sel) {
-    OrigViewMove(obj,sel);
+    DiagInc(&DiagMove); OrigViewMove(obj,sel);
     if (!StartupComplete || !NSThread.isMainThread || Rendering) return;
     NSString *name=NSStringFromClass([obj class]);
     if ([name isEqualToString:@"SBFLockScreenDateView"] ||
@@ -975,18 +1011,25 @@ static void ViewMove(id obj,SEL sel) {
 }
 static void (*OrigLabelDraw)(id,SEL,CGRect);
 static void LabelDraw(id obj,SEL sel,CGRect rect) {
-    if (!Rendering && ClockReplacementReady((UILabel *)obj)) return;
-    OrigLabelDraw(obj,sel,rect);
+    DiagInc(&DiagDraw);
+    BOOL main=!Rendering && DiagDrawDepth==0 && IsStandaloneTimeLabel((UILabel *)obj);
+    if (main) DiagInc(&DiagMainDraw);
+    ++DiagDrawDepth;
+    @try {
+        if (!Rendering && ClockReplacementReady((UILabel *)obj)) { if (main) DiagInc(&DiagSuppress); return; }
+        if (main) DiagInc(&DiagNative);
+        OrigLabelDraw(obj,sel,rect);
+    } @finally { --DiagDrawDepth; }
 }
 static void (*OrigLabelLayout)(id,SEL);
 static void (*OrigLabelMove)(id,SEL);
 static void (*OrigLabelText)(id,SEL,id);
 static void (*OrigLabelAttributed)(id,SEL,id);
 static void LabelLayout(id obj,SEL sel) {
-    OrigLabelLayout(obj,sel); Schedule((UILabel *)obj);
+    DiagInc(&DiagLayout); OrigLabelLayout(obj,sel); Schedule((UILabel *)obj);
 }
 static void LabelMove(id obj,SEL sel) {
-    OrigLabelMove(obj,sel); Schedule((UILabel *)obj);
+    DiagInc(&DiagMove); OrigLabelMove(obj,sel); Schedule((UILabel *)obj);
 }
 static void LabelText(id obj,SEL sel,id value) {
     OrigLabelText(obj,sel,value); Schedule((UILabel *)obj);
@@ -1011,6 +1054,12 @@ static void InstallLabelHooks(void) {
     if (!OrigLabelText) MSHookMessageEx(cls,@selector(setText:),(IMP)LabelText,(IMP *)&OrigLabelText);
     if (!OrigLabelAttributed) MSHookMessageEx(cls,@selector(setAttributedText:),(IMP)LabelAttributed,(IMP *)&OrigLabelAttributed);
     if (!OrigLabelDraw) MSHookMessageEx(cls,@selector(drawTextInRect:),(IMP)LabelDraw,(IMP *)&OrigLabelDraw);
+    DiagRememberIMP(UIView.class,@selector(didMoveToWindow),(IMP)OrigViewMove,(IMP)ViewMove);
+    DiagRememberIMP(cls,@selector(layoutSubviews),(IMP)OrigLabelLayout,(IMP)LabelLayout);
+    DiagRememberIMP(cls,@selector(didMoveToWindow),(IMP)OrigLabelMove,(IMP)LabelMove);
+    DiagRememberIMP(cls,@selector(setText:),(IMP)OrigLabelText,(IMP)LabelText);
+    DiagRememberIMP(cls,@selector(setAttributedText:),(IMP)OrigLabelAttributed,(IMP)LabelAttributed);
+    DiagRememberIMP(cls,@selector(drawTextInRect:),(IMP)OrigLabelDraw,(IMP)LabelDraw);
     LabelHooked=OrigViewMove && OrigLabelLayout && OrigLabelMove && OrigLabelText && OrigLabelAttributed && OrigLabelDraw;
 }
 // Hook overrides as well as UILabel: private animating labels need not call super.
@@ -1044,15 +1093,24 @@ static void InstallClockHooks(void) {
             IMP hook;
             if ([method isEqualToString:@"drawTextInRect:"]) {
                 hook=imp_implementationWithBlock(^(id obj,CGRect rect) {
-                    if (!Rendering && ClockReplacementReady((UILabel *)obj)) return;
-                    ((void(*)(id,SEL,CGRect))original)(obj,sel,rect);
+                    DiagInc(&DiagDraw);
+                    BOOL main=!Rendering && DiagDrawDepth==0 && IsStandaloneTimeLabel((UILabel *)obj);
+                    if (main) DiagInc(&DiagMainDraw);
+                    ++DiagDrawDepth;
+                    @try {
+                        if (!Rendering && ClockReplacementReady((UILabel *)obj)) { if (main) DiagInc(&DiagSuppress); return; }
+                        if (main) DiagInc(&DiagNative);
+                        ((void(*)(id,SEL,CGRect))original)(obj,sel,rect);
+                    } @finally { --DiagDrawDepth; }
                 });
             } else {
                 hook=imp_implementationWithBlock(^(id obj) {
+                    if ([method isEqualToString:@"layoutSubviews"]) DiagInc(&DiagLayout); else DiagInc(&DiagMove);
                     ((void(*)(id,SEL))original)(obj,sel); refresh(obj);
                 });
             }
             MSHookMessageEx(cls,sel,hook,&original);
+            DiagRememberIMP(cls,sel,original,hook);
             if (original) [installed addObject:key];
         }
     }
@@ -1089,6 +1147,7 @@ static void RetryDateDiscover(void) {
     // Date success must never cancel the remaining bounded clock retries.
     LoadConfig(); DiscoverAndApply();
 }
+#include "LSGCDiagnostics.inc"
 static void WriteDiagnostics(void) {
     Discover();
     NSUInteger clocks=0,scoped=0,active=0; NSMutableArray *details=[NSMutableArray array];
@@ -1121,9 +1180,9 @@ static void WriteDiagnostics(void) {
             [details addObject:[NSString stringWithFormat:@"主时间候选=是 时间形态=%@ 锁屏范围=%@ 可见=%@ 分隔符=%@\nbounds=%@ hidden=%d alpha=%.3f 不可见原因=%@\n已渲染=%@ 模式=%@\n%@",TimeText(label.text ?: label.attributedText.string)?@"是":@"否",lock?@"是":@"否",Visible(label)?@"是":@"否",SeparatorCodes(label.text ?: label.attributedText.string),NSStringFromCGRect(label.bounds),label.hidden,label.alpha,blocked,ClockReplacementReady(label)?@"是":@"否",mode,[chain componentsJoinedByString:@" > "]]];
         }
     }
-    NSString *report=[NSString stringWithFormat:@"兼容层 %@\n类已加载（原生四类）：%@\nHook 已安装：%@\nHook 明细：%@\n扫描发现（时间+日期）：%lu\n主时间扫描发现：%lu\n主时间锁屏范围命中：%lu\n主时间已渲染（通过安全门禁）：%lu\n请求开关：%@\n实际时间替换：%@\n构造器初始化：%@\n\n%@",
+    NSString *report=[NSString stringWithFormat:@"兼容层 %@\n类已加载（原生四类）：%@\nHook 已安装：%@\nHook 明细：%@\n扫描发现（时间+日期）：%lu\n主时间扫描发现：%lu\n主时间锁屏范围命中：%lu\n主时间安全门当前通过（不代表像素上屏）：%lu\n请求开关：%@\n实际时间替换：%@\n构造器初始化：%@\n\n%@",
         LSGCVersionString,NativeClassesLoaded?@"是":@"否",Hooked?@"是":@"否",HookReport?:@"无",(unsigned long)Labels.allObjects.count,(unsigned long)clocks,(unsigned long)scoped,(unsigned long)active,[Config[@"enabled"] boolValue]?@"开":@"关",
-        ([Config[@"enabled"] boolValue] && Hooked && active)?@"生效":@"未生效（保留系统时间）",StartupComplete?@"完成":@"未完成",[details componentsJoinedByString:@"\n\n"]];
+        ([Config[@"enabled"] boolValue] && Hooked && active)?@"当前满足抑制门禁（需主时间draw计数与截图佐证）":@"未生效（保留系统时间）",StartupComplete?@"完成":@"未完成",[details componentsJoinedByString:@"\n\n"]];
     NSMutableArray *tree=[NSMutableArray array];
     for (UIView *root in DateViews.allObjects) {
         NSMutableArray<UIView *> *queue=[NSMutableArray arrayWithObject:root];
@@ -1144,6 +1203,7 @@ static void WriteDiagnostics(void) {
         [Config[@"dateGradient"] boolValue]?@"开":@"关",LabelHooked?@"是":@"否",(unsigned long)dates,(unsigned long)dateActive,
         [dateDetails componentsJoinedByString:@"\n"],[tree componentsJoinedByString:@"\n"]];
     report=[report stringByAppendingFormat:@"\n时间字体：%@",FontStatus?:@"未加载"];
+    report=[report stringByAppendingString:DiagReport()];
     CFPreferencesSetAppValue(CFSTR("diagnosticReport"),(__bridge CFStringRef)report,(__bridge CFStringRef)Domain);
     CFPreferencesAppSynchronize((__bridge CFStringRef)Domain);
     CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),Replied,NULL,NULL,true);
