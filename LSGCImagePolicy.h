@@ -26,7 +26,10 @@ static inline bool LSGCImageCommitPolicy(bool enabled,bool isClock,bool dateEnab
 struct LSGCImageBasis { double a,b,c,d; };
 static inline LSGCImageBasis LSGCImageMappedBasis(double ox,double oy,double xx,double xy,
     double yx,double yy,double sx,double sy) {
-    return {(xx-ox)*sx,(xy-oy)*sx,(yx-ox)*sy,(yy-oy)*sy};
+    LSGCImageBasis result={};
+    result.a=(xx-ox)*sx; result.b=(xy-oy)*sx;
+    result.c=(yx-ox)*sy; result.d=(yy-oy)*sy;
+    return result;
 }
 static inline bool LSGCImageCacheReusable(bool signatureCurrent,bool ink,bool contents) {
     return signatureCurrent && ink && contents;
