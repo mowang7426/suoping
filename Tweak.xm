@@ -12,6 +12,7 @@
 #import "LSGCVersion.h"
 #import "LSGCFont.h"
 #import "LSGCClockSafety.h"
+#import "LSGCClockScope.h"
 
 // An optional companion: never patch, replace or distribute Liquidify binaries.
 extern "C" void MSHookMessageEx(Class, SEL, IMP, IMP *);
@@ -29,6 +30,11 @@ static NSHashTable<UIView *> *DateViews;
 static Class GlassClass;
 static BOOL Hooked;
 static BOOL LabelHooked;
+static NSMutableSet<NSString *> *ClockHookKeys;
+static BOOL NativeClassesLoaded;
+static BOOL StartupComplete;
+static BOOL ImageRefreshPending;
+static void Walk(UIView *view,NSUInteger depth);
 static NSString *HookReport;
 static char StateKey, PendingKey;
 static BOOL Rendering;
@@ -179,15 +185,11 @@ static BOOL IsDateSubtitleView(NSString *name) {
 static BOOL IsVibrancyView(NSString *name) {
     return [name isEqualToString:@"BSUIVibrancyEffectView"] || [name hasSuffix:@"VibrancyEffectView"];
 }
-static BOOL IsProminentTimeView(NSString *name) {
-    return [name isEqualToString:@"CSProminentTimeView"] ||
-        [name containsString:@"ProminentTimeView"];
-}
 static BOOL IsStandaloneTimeLabel(UILabel *label) {
-    for (UIView *view=label; view; view=view.superview) {
-        if (IsProminentTimeView(NSStringFromClass(view.class))) return YES;
-    }
-    return NO;
+    const char *names[64]; unsigned count=0;
+    for (UIView *view=label; view && count<64; view=view.superview)
+        names[count++]=class_getName(view.class);
+    return LSGCMainClockChain(names,count);
 }
 static UIView *DateOverlayParent(UILabel *label) {
     // A sibling of the actual time label inherits every native ancestor
@@ -195,20 +197,20 @@ static UIView *DateOverlayParent(UILabel *label) {
     // Do not move time out of its animated hierarchy as we do for date vibrancy.
     if (IsStandaloneTimeLabel(label)) return label.superview;
     BOOL subtitle=NO;
-    UIView *dateView=nil;
+    UIView *dateView=nil, *parent=nil;
     for (UIView *view=label.superview;view;view=view.superview) {
         NSString *name=NSStringFromClass(view.class);
-        // iOS 17's actual clock is _UIAnimatingLabel inside CSProminentTimeView.
-        // Use that stable local container; do not depend on Liquidify.
-        if (IsProminentTimeView(name)) { subtitle=YES; dateView=view; }
+        if ([name isEqualToString:@"CSProminentTimeView"]) return nil;
         if (IsDateSubtitleView(name)) { subtitle=YES; dateView=view; }
-        // Place color outside the monochrome vibrancy/portal composition.
-        if (subtitle && IsVibrancyView(name)) return view.superview;
+        if (subtitle && !parent && IsVibrancyView(name)) parent=view.superview;
+        if ([name isEqualToString:@"SBFLockScreenDateView"])
+            return subtitle ? (parent ?: dateView) : nil;
     }
-    return dateView;
+    return nil;
 }
 static void Schedule(UILabel *label) {
-    if (!NSThread.isMainThread || Rendering) return;
+    if (!NSThread.isMainThread || Rendering || !StartupComplete) return;
+    if (!Hooked && IsStandaloneTimeLabel(label)) InstallHooks();
     BOOL tracked=objc_getAssociatedObject(label,&StateKey)!=nil;
     BOOL glass=GlassClass && [label isKindOfClass:GlassClass];
     if (!tracked && !glass && !DateOverlayParent(label)) return;
@@ -742,7 +744,7 @@ static NSString *DateSignature(UILabel *label) {
 // inside the native label, so native ancestor AND label animations run once.
 static BOOL ClockReplacementReady(UILabel *label) {
     LSGCState *s=objc_getAssociatedObject(label,&StateKey);
-    if (!s || !s.clockCommitted || !IsStandaloneTimeLabel(label)) return NO;
+    if (!Hooked || !LabelHooked || !s || !s.clockCommitted || !IsStandaloneTimeLabel(label)) return NO;
     NSString *name=[Config[@"fontName"] isKindOfClass:NSString.class] ? Config[@"fontName"] : @"";
     BOOL fontReady=!name.length || (ImportedFont!=nil) ||
         (![Config[@"fontPath"] length] && [UIFont fontWithName:name size:label.font.pointSize]!=nil);
@@ -762,7 +764,7 @@ static BOOL ClockReplacementReady(UILabel *label) {
     for (id color in s.gradient.colors) colorAlpha=MAX(colorAlpha,CGColorGetAlpha((__bridge CGColorRef)color));
     LSGCClockReadiness ready={ [Config[@"enabled"] boolValue], fontReady, s.maskHasInk,
         attached, Visible(label), onScreen, [s.signature isEqualToString:DateSignature(label)],
-        s.gradient.opacity*s.dateHost.opacity*colorAlpha };
+        s.gradient.opacity*s.dateHost.opacity*colorAlpha, (bool)(Hooked && LabelHooked) };
     return LSGCCanReplaceClock(ready);
 }
 static void Apply(UILabel *label) {
@@ -771,7 +773,7 @@ static void Apply(UILabel *label) {
     BOOL isGlassLabel=GlassClass && [label isKindOfClass:GlassClass];
     BOOL clock=IsStandaloneTimeLabel(label);
     UIView *dateParent=clock ? label : DateOverlayParent(label);
-    if (clock && !label.superview) { RemoveOverlay(label); return; }
+    if (clock && (!Hooked || !label.superview)) { RemoveOverlay(label); return; }
     if (!isGlassLabel && dateParent) {
         NSString *displayText=label.text ?: label.attributedText.string;
         BOOL allowDate=TimeText(displayText) || [Config[@"dateGradient"] boolValue];
@@ -931,7 +933,45 @@ static void Apply(UILabel *label) {
 static void InstallHooks(void) {
     // Standalone implementation: no Liquidify class lookup or private hook.
     InstallLabelHooks(); InstallClockHooks();
-    if (!HookReport) HookReport=@"standalone-native-clock";
+    NativeClassesLoaded=NSClassFromString(@"_UIAnimatingLabel") &&
+        NSClassFromString(@"CSProminentTimeView") && NSClassFromString(@"CSProminentDisplayView") &&
+        NSClassFromString(@"SBFLockScreenDateView");
+    // Success means native classes exist AND each actual override is installed.
+    // Inherited selectors are covered by the UILabel / UIView base hooks.
+    Hooked=LabelHooked && NativeClassesLoaded;
+    NSMutableArray *status=[NSMutableArray array];
+    for (NSString *name in @[@"SBFLockScreenDateView",@"CSProminentTimeView",@"CSProminentDisplayView",@"_UIAnimatingLabel"]) {
+        Class cls=NSClassFromString(name);
+        if (!cls) { [status addObject:[name stringByAppendingString:@": 未加载"]]; continue; }
+        [status addObject:[name stringByAppendingString:@": 已加载"]];
+        unsigned count=0; Method *methods=class_copyMethodList(cls,&count);
+        NSArray *selectors=[cls isSubclassOfClass:UILabel.class] ? @[@"layoutSubviews",@"didMoveToWindow",@"drawTextInRect:"] : @[@"layoutSubviews",@"didMoveToWindow"];
+        for (NSString *method in selectors) {
+            SEL sel=NSSelectorFromString(method); BOOL own=NO;
+            for (unsigned i=0;i<count;i++) if (method_getName(methods[i])==sel) own=YES;
+            if (!own) continue;
+            NSString *key=[name stringByAppendingFormat:@"/%@",method];
+            BOOL ok=[ClockHookKeys containsObject:key];
+            Hooked=Hooked && ok;
+            [status addObject:[key stringByAppendingString:ok ? @": 已安装" : @": 失败"]];
+        }
+        free(methods);
+    }
+    NSString *previousReport=HookReport;
+    HookReport=[NSString stringWithFormat:@"standalone-native-clock; UILabel/UIView=%@; %@",
+        LabelHooked ? @"已安装" : @"失败",[status componentsJoinedByString:@"; "]];
+    if (![previousReport isEqualToString:HookReport]) NSLog(@"[LSGC] installation: %@",HookReport);
+}
+static void (*OrigViewMove)(id,SEL);
+static void ViewMove(id obj,SEL sel) {
+    OrigViewMove(obj,sel);
+    if (!StartupComplete || !NSThread.isMainThread || Rendering) return;
+    NSString *name=NSStringFromClass([obj class]);
+    if ([name isEqualToString:@"SBFLockScreenDateView"] ||
+        [name isEqualToString:@"CSProminentDisplayView"] ||
+        [name isEqualToString:@"CSProminentTimeView"]) {
+        InstallHooks(); Walk((UIView *)obj,0);
+    }
 }
 static void (*OrigLabelDraw)(id,SEL,CGRect);
 static void LabelDraw(id obj,SEL sel,CGRect rect) {
@@ -961,20 +1001,24 @@ static void InstallLabelHooks(void) {
     Method move=class_getInstanceMethod(cls,@selector(didMoveToWindow));
     Method text=class_getInstanceMethod(cls,@selector(setText:));
     Method attributed=class_getInstanceMethod(cls,@selector(setAttributedText:));
-    if (!layout || !move || !text || !attributed) return;
-    MSHookMessageEx(cls,@selector(layoutSubviews),(IMP)LabelLayout,(IMP *)&OrigLabelLayout);
-    MSHookMessageEx(cls,@selector(didMoveToWindow),(IMP)LabelMove,(IMP *)&OrigLabelMove);
-    MSHookMessageEx(cls,@selector(setText:),(IMP)LabelText,(IMP *)&OrigLabelText);
-    MSHookMessageEx(cls,@selector(setAttributedText:),(IMP)LabelAttributed,(IMP *)&OrigLabelAttributed);
-    MSHookMessageEx(cls,@selector(drawTextInRect:),(IMP)LabelDraw,(IMP *)&OrigLabelDraw);
-    LabelHooked=OrigLabelLayout && OrigLabelMove && OrigLabelText && OrigLabelAttributed;
+    Method draw=class_getInstanceMethod(cls,@selector(drawTextInRect:));
+    Method viewMove=class_getInstanceMethod(UIView.class,@selector(didMoveToWindow));
+    if (!layout || !move || !text || !attributed || !draw || !viewMove) return;
+    // Install only missing hooks: a partial failure must not hook our own IMP again.
+    if (!OrigViewMove) MSHookMessageEx(UIView.class,@selector(didMoveToWindow),(IMP)ViewMove,(IMP *)&OrigViewMove);
+    if (!OrigLabelLayout) MSHookMessageEx(cls,@selector(layoutSubviews),(IMP)LabelLayout,(IMP *)&OrigLabelLayout);
+    if (!OrigLabelMove) MSHookMessageEx(cls,@selector(didMoveToWindow),(IMP)LabelMove,(IMP *)&OrigLabelMove);
+    if (!OrigLabelText) MSHookMessageEx(cls,@selector(setText:),(IMP)LabelText,(IMP *)&OrigLabelText);
+    if (!OrigLabelAttributed) MSHookMessageEx(cls,@selector(setAttributedText:),(IMP)LabelAttributed,(IMP *)&OrigLabelAttributed);
+    if (!OrigLabelDraw) MSHookMessageEx(cls,@selector(drawTextInRect:),(IMP)LabelDraw,(IMP *)&OrigLabelDraw);
+    LabelHooked=OrigViewMove && OrigLabelLayout && OrigLabelMove && OrigLabelText && OrigLabelAttributed && OrigLabelDraw;
 }
 // Hook overrides as well as UILabel: private animating labels need not call super.
 // One block/original IMP per class/selector avoids inherited-hook recursion.
 static void InstallClockHooks(void) {
-    static NSMutableSet<NSString *> *installed;
-    if (!installed) installed=[NSMutableSet set];
-    for (NSString *name in @[@"CSProminentTimeView",@"CSProminentDisplayView",@"_UIAnimatingLabel"]) {
+    if (!ClockHookKeys) ClockHookKeys=[NSMutableSet set];
+    NSMutableSet<NSString *> *installed=ClockHookKeys;
+    for (NSString *name in @[@"SBFLockScreenDateView",@"CSProminentTimeView",@"CSProminentDisplayView",@"_UIAnimatingLabel"]) {
         Class cls=NSClassFromString(name);
         if (!cls) continue;
         BOOL labelClass=[cls isSubclassOfClass:UILabel.class];
@@ -993,9 +1037,9 @@ static void InstallClockHooks(void) {
             void (^refresh)(id)=^(id obj) {
                 if (Rendering || !NSThread.isMainThread) return;
                 if (labelClass) { Schedule((UILabel *)obj); return; }
-                // Only our known clock labels. No window traversal or polling.
-                for (UILabel *label in Labels.allObjects)
-                    if (IsStandaloneTimeLabel(label) && [label isDescendantOfView:(UIView *)obj]) Schedule(label);
+                // Discover NEW labels in this local subtree, not only the labels
+                // captured at SpringBoard startup. No global traversal per tick.
+                Walk((UIView *)obj,0);
             };
             IMP hook;
             if ([method isEqualToString:@"drawTextInRect:"]) {
@@ -1013,19 +1057,14 @@ static void InstallClockHooks(void) {
         }
     }
 }
-static BOOL IsDateCandidate(UILabel *label) {
-    if (![Config[@"dateGradient"] boolValue]) return NO;
-    NSString *text=label.text ?: label.attributedText.string;
-    return ClockDateText(text) && InLockScreen(label);
-}
 static void Walk(UIView *view,NSUInteger depth) {
     if (!view || depth>64) return;
     if (InLockScreen(view) && [NSStringFromClass(view.class) containsString:@"Date"]) [DateViews addObject:view];
     if ([view isKindOfClass:UILabel.class]) {
         UILabel *label=(UILabel *)view;
-        BOOL glassLabel=GlassClass && [view isKindOfClass:GlassClass];
-        BOOL dateLabel=!glassLabel && (DateOverlayParent(label)!=nil || IsDateCandidate(label));
-        if (glassLabel || dateLabel) { [Labels addObject:label]; Schedule(label); }
+        BOOL clock=IsStandaloneTimeLabel(label);
+        BOOL date=!clock && DateOverlayParent(label)!=nil;
+        if (clock || date) { [Labels addObject:label]; Schedule(label); }
     }
     for (UIView *child in view.subviews) Walk(child,depth+1);
 }
@@ -1042,21 +1081,13 @@ static void Discover(void) {
         for (UIWindow *window in ((UIWindowScene *)scene).windows) Walk(window,0);
     }
 }
-static BOOL DateOverlayAttached(void) {
-    for (UILabel *label in Labels.allObjects) {
-        LSGCState *s=objc_getAssociatedObject(label,&StateKey);
-        if (s.dateHost.superlayer) return YES;
-    }
-    return NO;
-}
 static void DiscoverAndApply(void) {
     Discover();
     for (UILabel *label in Labels.allObjects) Schedule(label);
 }
 static void RetryDateDiscover(void) {
-    LoadConfig();
-    if (DateOverlayAttached()) return;
-    DiscoverAndApply();
+    // Date success must never cancel the remaining bounded clock retries.
+    LoadConfig(); DiscoverAndApply();
 }
 static void WriteDiagnostics(void) {
     Discover();
@@ -1064,26 +1095,35 @@ static void WriteDiagnostics(void) {
     NSUInteger dates=0,dateActive=0;
     NSMutableArray *dateDetails=[NSMutableArray array];
     for (UILabel *label in Labels.allObjects) {
-        BOOL time=GradientText(label.text ?: label.attributedText.string); clocks+=time;
+        BOOL time=IsStandaloneTimeLabel(label); clocks+=time;
         BOOL lock=InLockScreen(label); scoped+=(time && lock);
         LSGCState *s=objc_getAssociatedObject(label,&StateKey);
-        active+=(s.gradient.superlayer!=nil);
-        BOOL date=DateOverlayParent(label)!=nil || s.dateHost!=nil;
+        active+=(time && ClockReplacementReady(label));
+        BOOL date=!time && DateOverlayParent(label)!=nil;
         if (date) {
             dates++; dateActive+=(s.gradient.superlayer!=nil);
             if (dateDetails.count<12) [dateDetails addObject:[NSString stringWithFormat:@"%@ bounds=%@ 可见=%d 锁屏=%d 渐变=%d 浓度=%.2f 模式=%@",
                 NSStringFromClass(label.class),NSStringFromCGRect(label.bounds),Visible(label),lock,
                 s.gradient.superlayer!=nil,s.gradient.opacity,s.maskMode?:@"未渲染"]];
         }
-        if (details.count<6) {
+        if (time && details.count<6) {
             NSMutableArray *chain=[NSMutableArray array];
             UIView *v=label;
             for (NSUInteger i=0;v && i<12;i++,v=v.superview) [chain addObject:NSStringFromClass(v.class)];
-            [details addObject:[NSString stringWithFormat:@"时间形态=%@ 锁屏范围=%@ 可见=%@ 分隔符=%@\n模式=%@\n%@",time?@"是":@"否",lock?@"是":@"否",Visible(label)?@"是":@"否",SeparatorCodes(label.text ?: label.attributedText.string),s.maskMode?:@"尚未渲染",[chain componentsJoinedByString:@" > "]]];
+            NSString *blocked=@"无";
+            if (!label.window) blocked=@"未入窗";
+            for (UIView *ancestor=label; ancestor; ancestor=ancestor.superview) {
+                if (ancestor.hidden || ancestor.alpha<0.01) {
+                    blocked=[NSString stringWithFormat:@"%@ hidden=%d alpha=%.3f",NSStringFromClass(ancestor.class),ancestor.hidden,ancestor.alpha]; break;
+                }
+            }
+            NSString *mode=s.maskMode ?: (!Hooked ? @"Hook未就绪，保留系统时间" : (!Visible(label) ? @"原生层不可见，未尝试替换" : @"待布局/渲染，保留系统时间"));
+            [details addObject:[NSString stringWithFormat:@"主时间候选=是 时间形态=%@ 锁屏范围=%@ 可见=%@ 分隔符=%@\nbounds=%@ hidden=%d alpha=%.3f 不可见原因=%@\n已渲染=%@ 模式=%@\n%@",TimeText(label.text ?: label.attributedText.string)?@"是":@"否",lock?@"是":@"否",Visible(label)?@"是":@"否",SeparatorCodes(label.text ?: label.attributedText.string),NSStringFromCGRect(label.bounds),label.hidden,label.alpha,blocked,ClockReplacementReady(label)?@"是":@"否",mode,[chain componentsJoinedByString:@" > "]]];
         }
     }
-    NSString *report=[NSString stringWithFormat:@"兼容层 %@\n类已加载：%@\nHook 已安装：%@\nHook 明细：%@\n玻璃标签：%lu\n时间标签：%lu\n锁屏范围命中：%lu\n已附加渐变：%lu\n开关：%@\n\n%@",
-        LSGCVersionString,GlassClass?@"是":@"否",Hooked?@"是":@"否",HookReport?:@"无",(unsigned long)Labels.allObjects.count,(unsigned long)clocks,(unsigned long)scoped,(unsigned long)active,[Config[@"enabled"] boolValue]?@"开":@"关",[details componentsJoinedByString:@"\n\n"]];
+    NSString *report=[NSString stringWithFormat:@"兼容层 %@\n类已加载（原生四类）：%@\nHook 已安装：%@\nHook 明细：%@\n扫描发现（时间+日期）：%lu\n主时间扫描发现：%lu\n主时间锁屏范围命中：%lu\n主时间已渲染（通过安全门禁）：%lu\n请求开关：%@\n实际时间替换：%@\n构造器初始化：%@\n\n%@",
+        LSGCVersionString,NativeClassesLoaded?@"是":@"否",Hooked?@"是":@"否",HookReport?:@"无",(unsigned long)Labels.allObjects.count,(unsigned long)clocks,(unsigned long)scoped,(unsigned long)active,[Config[@"enabled"] boolValue]?@"开":@"关",
+        ([Config[@"enabled"] boolValue] && Hooked && active)?@"生效":@"未生效（保留系统时间）",StartupComplete?@"完成":@"未完成",[details componentsJoinedByString:@"\n\n"]];
     NSMutableArray *tree=[NSMutableArray array];
     for (UIView *root in DateViews.allObjects) {
         NSMutableArray<UIView *> *queue=[NSMutableArray arrayWithObject:root];
@@ -1269,13 +1309,22 @@ static void Notification(CFNotificationCenterRef center,void *observer,CFStringR
 }
 static void AddedImage(const struct mach_header *header,intptr_t slide) {
     (void)header; (void)slide;
-    dispatch_async(dispatch_get_main_queue(), ^{ InstallHooks(); });
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (!StartupComplete || ImageRefreshPending) return;
+        ImageRefreshPending=YES;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            ImageRefreshPending=NO; DiscoverAndApply();
+        });
+    });
 }
 __attribute__((constructor)) static void Start(void) {
     @autoreleasepool {
         if (![NSBundle.mainBundle.bundleIdentifier isEqualToString:@"com.apple.springboard"]) return;
         dispatch_async(dispatch_get_main_queue(), ^{
             Labels=[NSHashTable weakObjectsHashTable]; DateViews=[NSHashTable weakObjectsHashTable]; LoadConfig();
+            StartupComplete=YES;
+            InstallHooks();
+            NSLog(@"[LSGC] constructor initialized in SpringBoard; %@",HookReport);
             CFNotificationCenterRef center=CFNotificationCenterGetDarwinNotifyCenter();
             CFNotificationCenterAddObserver(center,NULL,Notification,Changed,NULL,CFNotificationSuspensionBehaviorDeliverImmediately);
             CFNotificationCenterAddObserver(center,NULL,Notification,Diagnose,NULL,CFNotificationSuspensionBehaviorDeliverImmediately);

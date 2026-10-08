@@ -19,6 +19,12 @@ def verify(path):
             if len(matches) != 1:
                 raise ValueError(f'{path}: expected one {suffix}; found {len(matches)}')
             return archive.extractfile(matches[0]).read()
+        injection='Library/MobileSubstrate/DynamicLibraries/LockScreenGradientClock'
+        assert plistlib.loads(read(injection+'.plist'))['Filter']['Bundles']==['com.apple.springboard']
+        dylib=read(injection+'.dylib')
+        assert len(dylib)>4096
+        for marker in [b'_UIAnimatingLabel', b'CSProminentTimeView', b'SBFLockScreenDateView', b'[LSGC] constructor initialized']:
+            assert marker in dylib, f'missing standalone entry/clock marker: {marker!r}'
         entry = plistlib.loads(read(ENTRY))['entry']
         assert entry['bundle'] == 'LockScreenGradientClockPrefs'
         assert entry['detail'] == 'LSGCRootListController'
