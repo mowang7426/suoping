@@ -19,7 +19,8 @@ static NSDictionary *DiagGate(UILabel *label) {
     NSString *name=[Config[@"fontName"] isKindOfClass:NSString.class] ? Config[@"fontName"] : @"";
     BOOL identity=IsStandaloneTimeLabel(label);
     BOOL fontReady=!name.length || ImportedFont!=nil || (![Config[@"fontPath"] length] && [UIFont fontWithName:name size:label.font.pointSize]!=nil);
-    BOOL attached=s && s.dateHost && s.gradient && s.mask && s.clockHost && s.dateHost.superlayer==s.clockHost.layer && s.gradient.superlayer==s.dateHost && s.gradient.mask==s.mask && s.mask.contents!=nil;
+    BOOL outlineReady=![Config[@"clockEdgeEnabled"] boolValue] || (s.clockRim.path && s.clockRim.superlayer==s.dateHost && s.clockRim.lineWidth>0);
+    BOOL attached=outlineReady && s && s.dateHost && s.gradient && s.mask && s.clockHost && s.dateHost.superlayer==s.clockHost.layer && s.gradient.superlayer==s.dateHost && s.gradient.mask==s.mask && s.mask.contents!=nil;
     CGRect rect=attached && label.window ? [s.dateHost convertRect:s.dateHost.bounds toLayer:label.window.layer] : CGRectZero;
     BOOL onScreen=!CGRectIsEmpty(rect) && !CGRectIsInfinite(rect) && !CGRectIsNull(rect) &&
         isfinite(rect.origin.x) && isfinite(rect.origin.y) && isfinite(rect.size.width) && isfinite(rect.size.height) && CGRectIntersectsRect(rect,label.window.bounds);
@@ -36,6 +37,11 @@ static NSDictionary *DiagGate(UILabel *label) {
     for (NSString *key in @[@"identity",@"hookReady",@"committed",@"siblingSelection",@"enabled",@"fontReady",@"maskHasInk",@"attached",@"visible",@"onScreen",@"signatureCurrent"])
         if (![gate[key] boolValue]) [failed addObject:key];
     if (!(opacity>=0.01)) [failed addObject:@"opacity"];
+    gate[@"outlineReady"]=@(outlineReady);
+    gate[@"clockCanvasSize"]=NSStringFromCGSize(s.clockCanvasSize);
+    gate[@"clockOutlineWidth"]=@(s.clockRim.lineWidth);
+    gate[@"clockOutlineOpacity"]=@(s.clockRim.opacity);
+    gate[@"clockOutlineAttached"]=@(s.clockRim && s.clockRim.superlayer==s.dateHost);
     gate[@"failedReasons"]=failed;
     gate[@"label"]=[NSString stringWithFormat:@"%@ %p",NSStringFromClass(label.class),label];
     gate[@"geometry"]=DiagGeometry(label,s.dateHost);
@@ -162,7 +168,7 @@ static NSString *DiagReport(void) {
     }
     [lines addObject:[NSString stringWithFormat:@"allCandidateCount=%lu (on-demand scan, no persistent candidate retention)",(unsigned long)candidates]];
     NSMutableDictionary *configuration=[NSMutableDictionary dictionary];
-    for (NSString *key in @[@"enabled",@"strictScope",@"opacity",@"dateGradient",@"fontName",@"fontPath",@"clockScale",@"clockWidth",@"clockHeight",@"clockOffsetX",@"clockOffsetY",@"clockSpacing",@"clockColonScale",@"clockThickness",@"clockThin",@"clockBold",@"maskMode",@"glassBlend",@"glassTint"])
+    for (NSString *key in @[@"enabled",@"strictScope",@"opacity",@"dateGradient",@"fontName",@"fontPath",@"clockScale",@"clockWidth",@"clockHeight",@"clockOffsetX",@"clockOffsetY",@"clockSpacing",@"clockColonScale",@"clockOpacity",@"clockWeight",@"clockEdgeEnabled",@"clockEdgeWidth",@"clockEdgeStrength",@"clockEdgeColor",@"clockThickness",@"clockThin",@"clockBold",@"maskMode",@"glassBlend",@"glassTint"])
         configuration[key]=Config[key] ?: @"unset";
     for (NSString *key in Config) if ([key hasPrefix:@"font"] || [key hasPrefix:@"clock"]) configuration[key]=Config[key];
     [lines addObject:[NSString stringWithFormat:@"font/clock config=%@\nfontStatus=%@ importedFont=%@\n=== End RealClockDiagnostics ===",configuration,FontStatus?:@"none",ImportedFont.fontName?:@"none"]];

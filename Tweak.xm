@@ -13,6 +13,7 @@
 #import "LSGCFont.h"
 #import "LSGCClockSafety.h"
 #import "LSGCClockScope.h"
+#import "LSGCClockRender.h"
 
 // An optional companion: never patch, replace or distribute Liquidify binaries.
 extern "C" void MSHookMessageEx(Class, SEL, IMP, IMP *);
@@ -75,6 +76,8 @@ static NSString *DiagReport(void);
 @interface LSGCState : NSObject
 @property(nonatomic,strong) CAGradientLayer *gradient;
 @property(nonatomic,strong) CALayer *dateHost;
+@property(nonatomic,strong) CAShapeLayer *clockRim;
+@property(nonatomic) CGSize clockCanvasSize;
 @property(nonatomic,weak) UIView *clockHost;
 @property(nonatomic,copy) NSString *hostSelection;
 @property(nonatomic,strong) CALayer *mask;
@@ -134,7 +137,12 @@ static void LoadConfig(void) {
     values[@"fontPath"]=@"";
     values[@"fontFamily"]=@"";
     values[@"clockMode"]=@0;
-    values[@"clockOpacity"]=@0.32;
+    values[@"clockOpacity"]=@1.0;
+    values[@"clockWeight"]=@0.8;
+    values[@"clockEdgeEnabled"]=@YES;
+    values[@"clockEdgeWidth"]=@1.5;
+    values[@"clockEdgeStrength"]=@1.0;
+    values[@"clockEdgeColor"]=@"#FFFFFF";
     values[@"clockColor"]=@"#FFFFFF";
     values[@"clockColor1"]=@"#FC7BE6";
     values[@"clockColor2"]=@"#6FB9FF";
@@ -392,6 +400,64 @@ static UIImage *SnapshotMask(CALayer *source,CGFloat scale) {
     }];
     return HasAlpha(image) ? image : nil;
 }
+// CoreText outlines avoid UILabel's native-sized backing-store clipping and
+// line truncation. Preserve run fonts/kern/colon sizing; normalize true bearings.
+static UIImage *SnapshotClockGlyphs(UILabel *label,NSAttributedString *text,CGFloat scale) {
+    if (!text.length) return nil;
+    CTLineRef line=CTLineCreateWithAttributedString((__bridge CFAttributedStringRef)text);
+    if (!line) return nil;
+    CGMutablePathRef glyphs=CGPathCreateMutable();
+    CFArrayRef runs=CTLineGetGlyphRuns(line);
+    BOOL valid=YES;
+    for (CFIndex i=0;i<CFArrayGetCount(runs) && valid;i++) {
+        CTRunRef run=(CTRunRef)CFArrayGetValueAtIndex(runs,i);
+        CTFontRef font=(CTFontRef)CFDictionaryGetValue(CTRunGetAttributes(run),kCTFontAttributeName);
+        CFIndex count=CTRunGetGlyphCount(run);
+        if (!font || count<=0 || count>256) { valid=NO; break; }
+        CGGlyph ids[256]; CGPoint positions[256];
+        CTRunGetGlyphs(run,CFRangeMake(0,count),ids);
+        CTRunGetPositions(run,CFRangeMake(0,count),positions);
+        for (CFIndex j=0;j<count;j++) {
+            CGPathRef path=CTFontCreatePathForGlyph(font,ids[j],NULL);
+            if (!path || CGPathIsEmpty(path)) { if (path) CGPathRelease(path); valid=NO; break; }
+            CGAffineTransform move=CGAffineTransformMakeTranslation(positions[j].x,positions[j].y);
+            CGPathAddPath(glyphs,&move,path); CGPathRelease(path);
+        }
+    }
+    CFRelease(line);
+    CGRect ink=CGPathGetPathBoundingBox(glyphs);
+    if (!valid || CGRectIsEmpty(ink) || CGRectIsInfinite(ink) || CGRectIsNull(ink)) { CGPathRelease(glyphs); return nil; }
+    CGFloat weight=Clamp([Config[@"clockWeight"] doubleValue],0,4);
+    CGFloat edge=[Config[@"clockEdgeEnabled"] boolValue] ? Clamp([Config[@"clockEdgeWidth"] doubleValue],0.5,6) : 0;
+    LSGCClockCanvas canvas=LSGCFullClockCanvas(label.bounds.size.width,label.bounds.size.height,ink.size.width,ink.size.height,weight,edge);
+    CGSize size=CGSizeMake(canvas.width,canvas.height);
+    // Include padding in the supersampling budget, never resize a clipped image.
+    scale=MAX(1,MIN(scale,MIN(4096.0/MAX(size.width,size.height),sqrt(8388608.0/MAX(1,size.width*size.height)))));
+    if (size.width>4096 || size.height>4096 || size.width*size.height>8388608) { CGPathRelease(glyphs); return nil; }
+    CGAffineTransform normalize=CGAffineTransformMake(1,0,0,-1,size.width*.5-CGRectGetMidX(ink),size.height*.5+CGRectGetMidY(ink));
+    CGPathRef path=CGPathCreateCopyByTransformingPath(glyphs,&normalize); CGPathRelease(glyphs);
+    UIGraphicsImageRendererFormat *format=[UIGraphicsImageRendererFormat preferredFormat];
+    format.opaque=NO; format.scale=scale;
+    UIGraphicsImageRenderer *renderer=[[UIGraphicsImageRenderer alloc] initWithSize:size format:format];
+    UIImage *image=[renderer imageWithActions:^(UIGraphicsImageRendererContext *context) {
+        CGContextRef ctx=context.CGContext;
+        CGContextSetFillColorWithColor(ctx,UIColor.whiteColor.CGColor);
+        CGContextSetStrokeColorWithColor(ctx,UIColor.whiteColor.CGColor);
+        CGContextSetLineJoin(ctx,kCGLineJoinRound); CGContextSetLineWidth(ctx,2*weight);
+        CGContextAddPath(ctx,path);
+        CGContextDrawPath(ctx,weight>0 ? kCGPathFillStroke : kCGPathFill);
+    }];
+    LSGCState *state=objc_getAssociatedObject(label,&StateKey);
+    state.clockCanvasSize=size;
+    if (!state.clockRim) { state.clockRim=[CAShapeLayer layer]; state.clockRim.name=@"LSGC.ClockOutline"; }
+    state.clockRim.path=path;
+    state.clockRim.lineJoin=kCALineJoinRound;
+    state.clockRim.lineWidth=2*(weight+edge);
+    state.clockRim.masksToBounds=NO;
+    CGPathRelease(path);
+    DiagCaptureMask(image,size,scale);
+    return HasAlpha(image) ? image : nil;
+}
 static UIImage *SnapshotText(UILabel *label,CGFloat scale) {
     BOOL clock=IsStandaloneTimeLabel(label);
     NSString *fontName=clock && [Config[@"fontName"] isKindOfClass:NSString.class] ? Config[@"fontName"] : @"";
@@ -436,6 +502,7 @@ static UIImage *SnapshotText(UILabel *label,CGFloat scale) {
         [text removeAttribute:NSShadowAttributeName range:all];
         mirror.attributedText=text;
     } else mirror.text=label.text;
+    if (clock) return SnapshotClockGlyphs(label,mirror.attributedText,scale);
     UIGraphicsImageRendererFormat *format=[UIGraphicsImageRendererFormat preferredFormat];
     format.opaque=NO; format.scale=MAX(1,scale);
     UIGraphicsImageRenderer *renderer=[[UIGraphicsImageRenderer alloc] initWithSize:mirror.bounds.size format:format];
@@ -737,9 +804,9 @@ static void ApplyStyle(UILabel *label,LSGCState *s,CALayer *host,NSUInteger moti
     [CATransaction begin]; [CATransaction setDisableActions:YES];
     s.gradient.bounds=(CGRect){CGPointZero,host.bounds.size};
     s.gradient.position=CGPointMake(CGRectGetMidX(host.bounds),CGRectGetMidY(host.bounds));
-    s.gradient.opacity=standaloneTime ? Clamp([Config[@"clockOpacity"] doubleValue],0,1) : (glass ? Clamp([Config[@"glassTint"] doubleValue],0,0.65) : Clamp([Config[@"opacity"] doubleValue],0,1));
+    s.gradient.opacity=standaloneTime ? LSGCClockFillOpacity([Config[@"clockOpacity"] doubleValue]) : (glass ? Clamp([Config[@"glassTint"] doubleValue],0,0.65) : Clamp([Config[@"opacity"] doubleValue],0,1));
     if (s.dateHost && !standaloneTime) s.gradient.opacity=1;
-    if ([Config[@"edgeEnabled"] boolValue] && s.edgeHost)
+    if (!standaloneTime && [Config[@"edgeEnabled"] boolValue] && s.edgeHost)
         s.gradient.opacity *= Clamp([Config[@"edgeCore"] doubleValue],0,1);
     if (motionBits&4) s.gradient.opacity*=0.4;
     NSInteger direction=[Config[@"direction"] integerValue];
@@ -765,7 +832,7 @@ static void ApplyStyle(UILabel *label,LSGCState *s,CALayer *host,NSUInteger moti
         }
         NSMutableArray *colors=[NSMutableArray array];
         if (standaloneTime && [Config[@"clockMode"] integerValue]==1) {
-            UIColor *solid=Color(Config[@"clockColor"],UIColor.whiteColor);
+            UIColor *solid=[Color(Config[@"clockColor"],UIColor.whiteColor) colorWithAlphaComponent:1];
             [colors addObject:(__bridge id)solid.CGColor];
             [colors addObject:(__bridge id)solid.CGColor];
             [colors addObject:(__bridge id)solid.CGColor];
@@ -773,7 +840,7 @@ static void ApplyStyle(UILabel *label,LSGCState *s,CALayer *host,NSUInteger moti
             [colors addObject:(__bridge id)solid.CGColor];
         } else if (standaloneTime) {
             for (NSUInteger i=0;i<4;i++) {
-                UIColor *c=Color(Config[[NSString stringWithFormat:@"clockColor%lu",(unsigned long)i+1]],UIColor.whiteColor);
+                UIColor *c=[Color(Config[[NSString stringWithFormat:@"clockColor%lu",(unsigned long)i+1]],UIColor.whiteColor) colorWithAlphaComponent:1];
                 [colors addObject:(__bridge id)c.CGColor];
             }
             [colors addObject:colors.lastObject];
@@ -805,7 +872,21 @@ static void ApplyStyle(UILabel *label,LSGCState *s,CALayer *host,NSUInteger moti
         s.revision=Revision;
     }
     PlaceTint(host,s.gradient,label,glass);
-    ApplyEdges(s,host);
+    if (standaloneTime) {
+        // Dedicated outline sits behind the solid fill, not an inner low-alpha
+        // date contour. Source hierarchy supplies animation geometry only once.
+        ClearEdges(s);
+        s.gradient.masksToBounds=NO; host.masksToBounds=NO;
+        BOOL outlined=[Config[@"clockEdgeEnabled"] boolValue];
+        s.clockRim.bounds=s.gradient.bounds; s.clockRim.position=s.gradient.position;
+        s.clockRim.fillColor=[Color(Config[@"clockEdgeColor"],UIColor.whiteColor) colorWithAlphaComponent:1].CGColor;
+        s.clockRim.strokeColor=s.clockRim.fillColor;
+        s.clockRim.opacity=outlined ? Clamp([Config[@"clockEdgeStrength"] doubleValue],0,1) : 0;
+        if (motionBits&4) s.clockRim.opacity*=0.4;
+        s.clockRim.hidden=!outlined;
+        s.clockRim.zPosition=s.gradient.zPosition-0.01;
+        if (s.clockRim.superlayer!=host) [host insertSublayer:s.clockRim below:s.gradient];
+    } else ApplyEdges(s,host);
     [CATransaction commit];
 }
 static void InstallMask(LSGCState *s,UIImage *image,BOOL native,CALayer *source,CALayer *host,UILabel *label) {
@@ -819,8 +900,9 @@ static void InstallMask(LSGCState *s,UIImage *image,BOOL native,CALayer *source,
         s.mask.position=CGPointMake(source.position.x-host.bounds.origin.x,source.position.y-host.bounds.origin.y); s.mask.transform=source.transform;
     } else {
         s.mask.anchorPoint=CGPointMake(.5,.5);
-        s.mask.bounds=(CGRect){CGPointZero,label.bounds.size};
-        s.mask.position=CGPointMake(label.bounds.size.width*.5,label.bounds.size.height*.5);
+        CGSize canvas=IsStandaloneTimeLabel(label) ? s.clockCanvasSize : label.bounds.size;
+        s.mask.bounds=(CGRect){CGPointZero,canvas};
+        s.mask.position=CGPointMake(canvas.width*.5,canvas.height*.5);
     }
     s.maskMode=native ? @"原插件文字遮罩" : @"同字体文字重绘";
     [CATransaction commit];
@@ -839,6 +921,7 @@ static void RemoveOverlay(UILabel *label) {
     s.ticket++; s.busy=NO; s.dirty=NO;
     [s.gradient removeFromSuperlayer]; [s.gradient removeAllAnimations];
     [s.dateHost removeFromSuperlayer];
+    if (s.clockRim) [s.clockRim removeFromSuperlayer];
     ClearEdges(s);
     s.signature=nil; s.revision=0;
 }
@@ -860,9 +943,11 @@ static NSString *DateSignature(UILabel *label) {
         label.attributedText ?: (id)label.text,label.font,NSStringFromCGSize(label.bounds.size),
         (long)label.numberOfLines,(long)label.textAlignment,(long)label.lineBreakMode,
         label.adjustsFontSizeToFitWidth,label.minimumScaleFactor,(long)label.baselineAdjustment];
-    if (!IsStandaloneTimeLabel(label)) return base;
-    return [base stringByAppendingFormat:@"|%@|%@|%@|%@|%.4f",
+    if (!IsStandaloneTimeLabel(label)) return [base stringByAppendingFormat:@"|%@|%@",Config[@"edgeEnabled"],Config[@"edgeWidth"]];
+    NSString *result=[base stringByAppendingFormat:@"|%@|%@|%@|%@|%.4f",
         Config[@"fontName"],Config[@"fontPath"],Config[@"clockSpacing"],Config[@"clockColonScale"],TextMaskScale(label)];
+    // Outline outsets/weight rebuild only on text or settings changes.
+    return [result stringByAppendingFormat:@"|%@|%@|%@",Config[@"clockWeight"],Config[@"clockEdgeWidth"],Config[@"clockEdgeEnabled"]];
 }
 // Suppress only the glyph draw, never UIView alpha/hidden. The overlay lives
 // in a verified visible host; native ancestor transforms are inherited once.
@@ -873,7 +958,9 @@ static BOOL ClockReplacementReady(UILabel *label) {
     NSString *name=[Config[@"fontName"] isKindOfClass:NSString.class] ? Config[@"fontName"] : @"";
     BOOL fontReady=!name.length || (ImportedFont!=nil) ||
         (![Config[@"fontPath"] length] && [UIFont fontWithName:name size:label.font.pointSize]!=nil);
-    BOOL attached=s.clockHost && s.dateHost.superlayer==s.clockHost.layer && s.gradient.superlayer==s.dateHost &&
+    BOOL outlineReady=![Config[@"clockEdgeEnabled"] boolValue] ||
+        (s.clockRim.path && s.clockRim.superlayer==s.dateHost && s.clockRim.lineWidth>0);
+    BOOL attached=outlineReady && s.clockHost && s.dateHost.superlayer==s.clockHost.layer && s.gradient.superlayer==s.dateHost &&
         s.gradient.mask==s.mask && s.mask.contents!=nil;
     CGRect rect=attached && label.window ? [s.dateHost convertRect:s.dateHost.bounds toLayer:label.window.layer] : CGRectZero;
     BOOL onScreen=!CGRectIsEmpty(rect) && !CGRectIsInfinite(rect) && !CGRectIsNull(rect) &&
@@ -934,6 +1021,15 @@ static void Apply(UILabel *label) {
                 if (!image || !HasAlpha(image)) { DiagApplyReturn=@"mask-no-ink"; if (clock) DiagCaptureFailure(label,DiagApplyReturn); RemoveOverlay(label); state.maskMode=@"遮罩无有效像素，保留系统文字"; return; }
                 state.maskHasInk=YES;
                 InstallMask(state,image,NO,nil,state.dateHost,label);
+                if (!clock) {
+                    if ([Config[@"edgeEnabled"] boolValue]) {
+                        CGImageRef ring=NULL,bevel=NULL;
+                        if (BuildEdgeImages(image,[Config[@"edgeWidth"] doubleValue],&ring,&bevel)) {
+                            InstallEdgeContents(state,ring,bevel,image.scale);
+                            CGImageRelease(ring); CGImageRelease(bevel);
+                        } else ClearEdges(state);
+                    } else ClearEdges(state);
+                }
                 // Replace the system glyph while preserving its layout and update path.
                 if (!clock && !state.hidOriginalLabel) {
                     state.originalAlpha=label.alpha;
@@ -956,7 +1052,7 @@ static void Apply(UILabel *label) {
                 CGFloat offsetY=IsStandaloneTimeLabel(label) ? Clamp([Config[@"clockOffsetY"] doubleValue],-200,200) : 0.0;
                 CGFloat sx=frame.size.width/label.bounds.size.width*userScale*widthScale;
                 CGFloat sy=frame.size.height/label.bounds.size.height*userScale*heightScale;
-                state.dateHost.bounds=(CGRect){CGPointZero,label.bounds.size};
+                state.dateHost.bounds=(CGRect){CGPointZero,clock ? state.clockCanvasSize : label.bounds.size};
                 state.dateHost.position=CGPointMake(CGRectGetMidX(frame)+offsetX,CGRectGetMidY(frame)+offsetY);
                 state.dateHost.transform=CATransform3DMakeScale(sx,sy,1);
                 if (clock) {
@@ -973,6 +1069,18 @@ static void Apply(UILabel *label) {
                         (y.x-origin.x)*userScale*heightScale,(y.y-origin.y)*userScale*heightScale,0,0));
                 }
                 if (state.dateHost.superlayer!=dateParent.layer) [dateParent.layer addSublayer:state.dateHost];
+                if (clock && label.window) {
+                    // A 2.35x native clock can exceed the physical display even
+                    // with a correct backing canvas. Cap uniform magnification
+                    // to screen width, but retain native notification motion and
+                    // user offsets; never remap an ancestor transform twice.
+                    CGRect visible=[state.dateHost convertRect:state.dateHost.bounds toLayer:label.window.layer];
+                    CGFloat available=MAX(1,label.window.bounds.size.width-8);
+                    if (isfinite(visible.size.width) && visible.size.width>available) {
+                        CGFloat fit=available/visible.size.width;
+                        state.dateHost.transform=CATransform3DScale(state.dateHost.transform,fit,fit,1);
+                    }
+                }
                 UpdateParallax();
                 ApplyStyle(label,state,state.dateHost,MotionBits(dateParent)|8);
             } @finally { [CATransaction commit]; }
