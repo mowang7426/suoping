@@ -217,22 +217,44 @@ static BOOL IsStandaloneTimeLabel(UILabel *label) {
 }
 // Select before visibility: the transparent source wrapper is not on the
 // sibling overlay's render path. Identity is the complete exact main-time chain.
+static UIView *ClockSourceWrapper(UILabel *label) {
+    const char *names[64]; UIView *views[64]; unsigned count=0;
+    for (UIView *v=label; v && count<64; v=v.superview) {
+        names[count]=class_getName(v.class); views[count++]=v;
+    }
+    int index=LSGCClockWrapperIndex(names,count);
+    return index<0 ? nil : views[index];
+}
 static UIView *ClockSelectOverlayParent(UILabel *label, NSString **reason) {
     if (!IsStandaloneTimeLabel(label)) { if (reason) *reason=@"identity"; return nil; }
-    UIView *wrapper=label.superview;
-    BOOL bypass=LSGCAllowSourceWrapper(true, wrapper && wrapper.class==UIView.class,
+    UIView *wrapper=ClockSourceWrapper(label);
+    if (!wrapper) { if (reason) *reason=@"sibling-wrapper-missing:requires-direct-UIView-parent-of-time-or-label"; return nil; }
+    BOOL bypass=LSGCAllowSourceWrapper(true, wrapper.class==UIView.class,
         true, wrapper.hidden, wrapper.alpha);
-    UIView *host=bypass ? wrapper.superview : label;
-    if (reason) *reason=bypass ? @"alpha-zero-wrapper-sibling" : @"native-label-host";
+    if (!bypass) {
+        if (reason) *reason=wrapper.hidden ? @"sibling-wrapper-hidden" :
+            (wrapper.class!=UIView.class ? @"sibling-wrapper-class" : @"sibling-wrapper-alpha-not-zero");
+        return nil; // Native glyph fallback, never a native-label custom host.
+    }
+    if (!wrapper.superview) { if (reason) *reason=@"sibling-host-missing"; return nil; }
+    UIView *host=wrapper.superview;
+    if (reason) *reason=@"alpha-zero-wrapper-sibling";
     return host;
 }
 static UIView *ClockOverlayParent(UILabel *label, NSString **reason) {
     // Never run Visible(label) or a label->window alpha gate before selection.
     UIView *host=ClockSelectOverlayParent(label,reason);
     if (!host) return nil;
-    UIView *wrapper=label.superview;
-    BOOL bypass=host==wrapper.superview && wrapper.class==UIView.class && wrapper.alpha==0.0 && !wrapper.hidden;
+    UIView *wrapper=ClockSourceWrapper(label);
+    BOOL bypass=wrapper && host==wrapper.superview && wrapper.class==UIView.class && wrapper.alpha==0.0 && !wrapper.hidden;
     if (!label.window || host.window!=label.window) { if (reason) *reason=@"identity-or-window"; return nil; }
+    CGRect hostRect=[host convertRect:host.bounds toView:label.window];
+    if (CGRectIsEmpty(hostRect) || CGRectIsNull(hostRect) || CGRectIsInfinite(hostRect) ||
+        !isfinite(hostRect.origin.x) || !isfinite(hostRect.origin.y) ||
+        !isfinite(hostRect.size.width) || !isfinite(hostRect.size.height) ||
+        !CGRectIntersectsRect(hostRect,label.window.bounds)) {
+        if (reason) *reason=@"sibling-host-invalid-or-offscreen-rect"; return nil;
+    }
     // Source-only validation: skip alpha/opacity on exactly the chosen wrapper,
     // not hidden, other low-alpha views, or any ancestor of the visible host.
     for (UIView *v=label; v && v!=host; v=v.superview) {
@@ -262,7 +284,14 @@ static UIView *ClockOverlayParent(UILabel *label, NSString **reason) {
             if (reason) *reason=[@"hidden-or-low-alpha:" stringByAppendingString:NSStringFromClass(v.class)]; return nil;
         }
         effectiveOpacity*=MIN(v.layer.opacity,shown.opacity);
-        if (v.clipsToBounds || v.layer.masksToBounds)
+        if (!CATransform3DIsAffine(v.layer.transform) || !CATransform3DIsAffine(v.layer.sublayerTransform) ||
+            !CATransform3DIsAffine(shown.transform) || !CATransform3DIsAffine(shown.sublayerTransform)) {
+            if (reason) *reason=@"unsupported-host-3d-transform"; return nil;
+        }
+        if (v.layer.mask || shown.mask) {
+            if (reason) *reason=[@"unsupported-host-layer-mask:" stringByAppendingString:NSStringFromClass(v.class)]; return nil;
+        }
+        if (v.clipsToBounds || v.layer.masksToBounds || shown.masksToBounds)
             visibleRect=CGRectIntersection(visibleRect,[v convertRect:v.bounds toView:label.window]);
     }
     if (effectiveOpacity<0.01 || CGRectIsEmpty(visibleRect) || CGRectIsNull(visibleRect)) {
@@ -839,7 +868,8 @@ static NSString *DateSignature(UILabel *label) {
 // in a verified visible host; native ancestor transforms are inherited once.
 static BOOL ClockReplacementReady(UILabel *label) {
     LSGCState *s=objc_getAssociatedObject(label,&StateKey);
-    if (!Hooked || !LabelHooked || !s || !s.clockCommitted || !IsStandaloneTimeLabel(label)) return NO;
+    if (!Hooked || !LabelHooked || !s || !s.clockCommitted || !IsStandaloneTimeLabel(label) ||
+        ![s.hostSelection isEqualToString:@"alpha-zero-wrapper-sibling"]) return NO;
     NSString *name=[Config[@"fontName"] isKindOfClass:NSString.class] ? Config[@"fontName"] : @"";
     BOOL fontReady=!name.length || (ImportedFont!=nil) ||
         (![Config[@"fontPath"] length] && [UIFont fontWithName:name size:label.font.pointSize]!=nil);
@@ -850,7 +880,7 @@ static BOOL ClockReplacementReady(UILabel *label) {
         isfinite(rect.origin.x) && isfinite(rect.origin.y) && isfinite(rect.size.width) && isfinite(rect.size.height) &&
         CGRectIntersectsRect(rect,label.window.bounds);
     for (UIView *v=s.clockHost; onScreen && v; v=v.superview) {
-        if (v.clipsToBounds) {
+        if (v.clipsToBounds || v.layer.masksToBounds || ((CALayer *)v.layer.presentationLayer).masksToBounds) {
             CGRect clip=[v convertRect:v.bounds toView:label.window];
             rect=CGRectIntersection(rect,clip); onScreen=!CGRectIsEmpty(rect) && !CGRectIsNull(rect);
         }

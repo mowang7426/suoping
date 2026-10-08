@@ -6,7 +6,7 @@ static NSString *DiagGeometry(UIView *view, CALayer *host) {
     CGRect clipped=overlay;
     for (UIView *v=view; v; v=v.superview) {
         CGRect rect=view.window ? [v convertRect:v.bounds toView:view.window] : CGRectZero;
-        if (v.clipsToBounds) { intersection=CGRectIntersection(intersection,rect); clipped=CGRectIntersection(clipped,rect); }
+        if (v.clipsToBounds || v.layer.masksToBounds || ((CALayer *)v.layer.presentationLayer).masksToBounds) { intersection=CGRectIntersection(intersection,rect); clipped=CGRectIntersection(clipped,rect); }
         [chain addObject:[NSString stringWithFormat:@"%@ %p hidden=%d alpha=%.4f clipsToBounds=%d windowRect=%@ labelIntersection=%@ overlayIntersection=%@",
             NSStringFromClass(v.class),v,v.hidden,v.alpha,v.clipsToBounds,NSStringFromCGRect(rect),NSStringFromCGRect(intersection),NSStringFromCGRect(clipped)]];
     }
@@ -24,16 +24,16 @@ static NSDictionary *DiagGate(UILabel *label) {
     BOOL onScreen=!CGRectIsEmpty(rect) && !CGRectIsInfinite(rect) && !CGRectIsNull(rect) &&
         isfinite(rect.origin.x) && isfinite(rect.origin.y) && isfinite(rect.size.width) && isfinite(rect.size.height) && CGRectIntersectsRect(rect,label.window.bounds);
     for (UIView *v=s.clockHost; onScreen && v; v=v.superview) {
-        if (v.clipsToBounds) { rect=CGRectIntersection(rect,[v convertRect:v.bounds toView:label.window]); onScreen=!CGRectIsEmpty(rect) && !CGRectIsNull(rect); }
+        if (v.clipsToBounds || v.layer.masksToBounds || ((CALayer *)v.layer.presentationLayer).masksToBounds) { rect=CGRectIntersection(rect,[v convertRect:v.bounds toView:label.window]); onScreen=!CGRectIsEmpty(rect) && !CGRectIsNull(rect); }
     }
     CGFloat colorAlpha=0;
     for (id color in s.gradient.colors) colorAlpha=MAX(colorAlpha,CGColorGetAlpha((__bridge CGColorRef)color));
     CGFloat opacity=s.gradient.opacity*s.dateHost.opacity*colorAlpha;
     NSMutableDictionary *gate=[@{@"identity":@(identity),@"hookReady":@(Hooked && LabelHooked),@"committed":@(s.clockCommitted),
-        @"enabled":@([Config[@"enabled"] boolValue]),@"fontReady":@(fontReady),@"maskHasInk":@(s.maskHasInk),@"attached":@(attached),
+        @"enabled":@([Config[@"enabled"] boolValue]),@"siblingSelection":@([s.hostSelection isEqualToString:@"alpha-zero-wrapper-sibling"]),@"fontReady":@(fontReady),@"maskHasInk":@(s.maskHasInk),@"attached":@(attached),
         @"visible":@(ClockHostVisible(label,s)),@"onScreen":@(onScreen),@"signatureCurrent":@([s.signature isEqualToString:DateSignature(label)]),@"opacity":@(opacity)} mutableCopy];
     NSMutableArray *failed=[NSMutableArray array];
-    for (NSString *key in @[@"identity",@"hookReady",@"committed",@"enabled",@"fontReady",@"maskHasInk",@"attached",@"visible",@"onScreen",@"signatureCurrent"])
+    for (NSString *key in @[@"identity",@"hookReady",@"committed",@"siblingSelection",@"enabled",@"fontReady",@"maskHasInk",@"attached",@"visible",@"onScreen",@"signatureCurrent"])
         if (![gate[key] boolValue]) [failed addObject:key];
     if (!(opacity>=0.01)) [failed addObject:@"opacity"];
     gate[@"failedReasons"]=failed;
@@ -46,6 +46,17 @@ static NSDictionary *DiagGate(UILabel *label) {
     gate[@"hostClass"]=host ? NSStringFromClass(host.class) : @"none";
     gate[@"hostWindowRect"]=host && label.window ? NSStringFromCGRect([host convertRect:host.bounds toView:label.window]) : @"none";
     gate[@"hostFailureReason"]=validatedHost ? @"none" : (hostFailure ?: @"unknown");
+    UIView *wrapper=ClockSourceWrapper(label);
+    gate[@"sourceWrapperClass"]=wrapper ? NSStringFromClass(wrapper.class) : @"none";
+    gate[@"sourceWrapperAlpha"]=wrapper ? @(wrapper.alpha) : @(-1);
+    gate[@"sourceWrapperHidden"]=@(wrapper.hidden);
+    gate[@"sourceWrapperParentClass"]=wrapper.superview ? NSStringFromClass(wrapper.superview.class) : @"none";
+    gate[@"hostOpacity"]=host ? @(host.layer.opacity) : @(-1);
+    gate[@"hostPresentationOpacity"]=host ? @(((CALayer *)host.layer.presentationLayer ?: host.layer).opacity) : @(-1);
+    gate[@"hostClipsToBounds"]=@(host.clipsToBounds);
+    gate[@"hostMasksToBounds"]=@(host.layer.masksToBounds);
+    gate[@"hostHasLayerMask"]=@(host.layer.mask!=nil);
+    gate[@"fallback"]=validatedHost && ClockReplacementReady(label) ? @"none" : @"native-glyph-pass (no native-label-host overlay)";
     return gate;
 }
 static void DiagCaptureFailure(UILabel *label, NSString *reason) {

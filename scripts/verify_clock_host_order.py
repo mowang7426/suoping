@@ -11,7 +11,12 @@ host=body('static UIView *ClockOverlayParent(', 'static BOOL ClockHostVisible(')
 apply=body('static void Apply(UILabel *label) {', 'static void InstallHooks(void) {')
 assert select.index('IsStandaloneTimeLabel(label)') < select.index('LSGCAllowSourceWrapper(') < select.index('UIView *host=')
 assert 'wrapper.class==UIView.class' in select and 'wrapper.hidden, wrapper.alpha' in select
-assert 'wrapper.superview : label' in select
+assert 'UIView *host=wrapper.superview;' in select
+assert 'ClockSourceWrapper(label)' in select and 'return label' not in select
+wrapper=body('static UIView *ClockSourceWrapper(', 'static UIView *ClockSelectOverlayParent(')
+assert 'LSGCClockWrapperIndex(names,count)' in wrapper and 'views[index]' in wrapper
+assert 'sibling-wrapper-alpha-not-zero' in select
+assert 'native-label-host' not in select
 assert 'alpha-zero-wrapper-sibling' in select
 for gate in ('Visible(', 'v.alpha', 'v.layer.opacity', 'label.window'):
     assert gate not in select, 'selection must not run generic visibility: '+gate

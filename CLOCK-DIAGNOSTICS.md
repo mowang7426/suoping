@@ -45,6 +45,16 @@ iOS 版本：
 - 不增加轮询、Timer 或 CADisplayLink。诊断不调用隐藏、附加或移除渲染层的方法。
 - 安全门通过是提交条件，不是像素上屏证明；自定义抑制计数说明 hook 放弃了原生 glyph 绘制，也不是用户看到了预期样式的最终证明。最终需完整报告与真机截图关联。
 
+## 2.0.5 真实宿主选择修复
+
+2.0.4 误把透明包装认作 `label.superview`。真机链是 `_UIAnimatingLabel -> CSProminentTimeView -> UIView(alpha=0, hidden=NO) -> BSUIVibrancyEffectView -> CSProminentDisplayView -> SBFLockScreenDateView`；直接标签父级是时间容器，因此原条件必然不命中，落到 native-label-host 后被 UIView 的通用 alpha 检查拒绝。旧测试把 UIView 放到标签正上方，未覆盖真实链。
+
+新策略先验证完整严格身份，再找 `CSProminentTimeView` 的直接 UIView 父包装（同时保留严格链中的直接标签包装）。只豁免该包装的 alpha/opacity，hidden 及其他源节点检查不豁免；选择其 superview.layer，即真实链的 BSUIVibrancyEffectView.layer。没有合法透明包装时返回明确 sibling-wrapper 失败并保留原生 glyph，不再尝试 native-label-host 自定义覆盖。
+
+选中后仍校验同一 window、有限有效可见 host rect、host 到窗口的 model/presentation hidden/opacity、乘积 opacity、裁剪交集与 affine 变换。host 祖先有不明 layer mask 或 3D 变换则拒绝，不假定它们安全。仅在 sibling 选择、mask/font、gradient、mount、signature、readiness 全通过后抑制主时间 glyph，不修改主时间或系统包装 alpha/hidden。
+
+诊断新增 sourceWrapperClass/Alpha/Hidden/ParentClass、hostOpacity/PresentationOpacity/ClipsToBounds/MasksToBounds/HasLayerMask、siblingSelection 与 native-glyph-pass 显式 fallback；hostSelection 必须为 alpha-zero-wrapper-sibling 或明确选择失败原因，验证失败另在 hostFailureReason 显示。便携回归使用上述完整真机链并绑定生产的包装索引算法；它不是 UIKit/真机视觉测试，vibrancy 内部渲染仍需真机完整报告与截图确认。
+
 ## 回归
 
 运行五个现有 C++ 测试及 `verify_clock_safety.py`、`verify_clock_startup.py`、`verify_settings.py`、`verify_clock_diagnostics.py`。GitHub Actions 继续实际构建 Rootless/Roothide，并通过 `verify_packages.py` 验证两包。构建和源码回归均不能替代真机验证。
