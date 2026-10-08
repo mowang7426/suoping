@@ -30,8 +30,8 @@ static NSDictionary *DiagGate(UILabel *label) {
     CGFloat colorAlpha=0;
     for (id color in s.gradient.colors) colorAlpha=MAX(colorAlpha,CGColorGetAlpha((__bridge CGColorRef)color));
     CGFloat opacity=s.gradient.opacity*s.dateHost.opacity*colorAlpha;
-    NSMutableDictionary *gate=[@{@"identity":@(identity),@"hookReady":@(LabelHooked && (LegacyClockKind(label) ? LegacyHooked : ProminentHooked)),@"committed":@(s.clockCommitted),
-        @"enabled":@([Config[@"enabled"] boolValue]),@"siblingSelection":@([s.hostSelection isEqualToString:@"alpha-zero-wrapper-sibling"] || [s.hostSelection isEqualToString:@"legacy-verified-text-sibling"] || [s.hostSelection isEqualToString:@"legacy-image-backed-adapter"]),@"fontReady":@(fontReady),@"maskHasInk":@(s.maskHasInk),@"attached":@(attached),
+    NSMutableDictionary *gate=[@{@"identity":@(identity),@"hookReady":@(Hooked && LabelHooked),@"committed":@(s.clockCommitted),
+        @"enabled":@([Config[@"enabled"] boolValue]),@"siblingSelection":@([s.hostSelection isEqualToString:@"alpha-zero-wrapper-sibling"]),@"fontReady":@(fontReady),@"maskHasInk":@(s.maskHasInk),@"attached":@(attached),
         @"visible":@(ClockHostVisible(label,s)),@"onScreen":@(onScreen),@"signatureCurrent":@([s.signature isEqualToString:DateSignature(label)]),@"opacity":@(opacity)} mutableCopy];
     NSMutableArray *failed=[NSMutableArray array];
     for (NSString *key in @[@"identity",@"hookReady",@"committed",@"siblingSelection",@"enabled",@"fontReady",@"maskHasInk",@"attached",@"visible",@"onScreen",@"signatureCurrent"])
@@ -49,16 +49,6 @@ static NSDictionary *DiagGate(UILabel *label) {
     UIView *host=ClockSelectOverlayParent(label,&selection);
     UIView *validatedHost=ClockOverlayParent(label,&hostFailure);
     gate[@"hostSelection"]=selection ?: @"not-selected";
-    gate[@"hierarchyFamily"]=LegacyClockKind(label) ? @"traditional-candidate" : @"prominent";
-    gate[@"actualReplacementReady"]=@(ClockReplacementReady(label));
-    gate[@"imageBackedNativeFallback"]=@(ImageParent(label)!=nil && !ClockReplacementReady(label));
-    gate[@"imageRole"]=@(ImageRole(label));
-    gate[@"imageNodes"]=@(ImageNodes(label).count);
-    gate[@"imageGlyphVisible"]=@(ImageGlyph(label)!=nil);
-    gate[@"imageSourceHiddenAllowed"]=@(ImageRole(label) && label.hidden);
-    gate[@"imageLeasedLayers"]=@(s.imageLeased.count);
-    gate[@"imageAdapterMounted"]=@(s.imageLeased.count>0 && ImageReady(label,s));
-    gate[@"imageLastReason"]=ImageLastReason ?: @"not-attempted";
     gate[@"hostClass"]=host ? NSStringFromClass(host.class) : @"none";
     gate[@"hostWindowRect"]=host && label.window ? NSStringFromCGRect([host convertRect:host.bounds toView:label.window]) : @"none";
     gate[@"hostFailureReason"]=validatedHost ? @"none" : (hostFailure ?: @"unknown");
@@ -127,11 +117,6 @@ static NSString *DiagScope(UIView *view) {
     }
     BOOL identity=[view isKindOfClass:UILabel.class] && IsStandaloneTimeLabel((UILabel *)view);
     NSString *reason=!label ? @"not-exact-_UIAnimatingLabel" : (subtitle ? @"subtitle/relative-date-excluded" : (stage<3 ? @"missing-or-out-of-order-required-ancestor" : @"none"));
-    if ([view isKindOfClass:UILabel.class] && LegacyClockKind((UILabel *)view)) {
-        NSString *selection=nil;
-        UIView *host=LegacyClockParent((UILabel *)view,&selection);
-        return [NSString stringWithFormat:@"category=traditional-structural-candidate legacyKind=%d verifiedTextSource=%d identity=%d InLockScreen=%d rejectedReason=%@ (candidate is not replacement success)",LegacyClockKind((UILabel *)view),host!=nil,identity,InLockScreen(view),selection?:@"unknown"];
-    }
     NSString *category=identity ? @"main-clock-identity (not proof of draw success)" : @"other/non-main";
     for (NSString *n in names) {
         if ([n containsString:@"Subtitle"] || [n containsString:@"RelativeDate"]) { category=@"date/subtitle (never main-clock success)"; break; }
@@ -146,10 +131,8 @@ static NSString *DiagReport(void) {
     [lines addObject:@"\n\n=== RealClockDiagnostics v1 ===\n计数为进程累计；主时间 draw 排除 SnapshotText 镜像绘制及 super 链重复调用。安全门通过/附加遮罩不等于真机视觉成功。\n日期渐变、通知时间、充电预估一律不能计入主时间成功。"];
     [lines addObject:[NSString stringWithFormat:@"InstallHooks=%llu Hooked=%d LabelHooked=%d NativeClassesLoaded=%d\nhookCalls layout=%llu didMove=%llu draw=%llu\nmainClockDraw=%llu nativePass=%llu customSuppress=%llu\nSchedule=%llu lastEarlyReturn=%@\nApply=%llu lastEarlyReturn=%@",
         DiagInstall,Hooked,LabelHooked,NativeClassesLoaded,DiagLayout,DiagMove,DiagDraw,DiagMainDraw,DiagNative,DiagSuppress,DiagSchedule,DiagScheduleReturn?:@"none",DiagApply,DiagApplyReturn?:@"none"]];
-    [lines addObject:[NSString stringWithFormat:@"familyReadiness prominent=%d traditional=%d legacyRootLoaded=%d imageEventHooks=%d imageContents=untouched nativeAlphaHidden=untouched imageMaskLease=latest-native-mask",ProminentHooked,LegacyHooked,LegacyClassesLoaded,ImageOrigMask && ImageOrigContents && ImageOrigSetImage]];
-    [lines addObject:[NSString stringWithFormat:@"imageAdapter commits=%llu rollbacks=%llu nativeUpdates=%llu cacheHits=%llu lastReason=%@ (mount/suppress counters are not visual acceptance)",ImageCommits,ImageRollbacks,ImageUpdates,ImageCacheHits,ImageLastReason ?: @"not-attempted"]];
     [lines addObject:[NSString stringWithFormat:@"mainClockApply=%llu lastMainClockApplyReturn=%@ (independent of date-only)",DiagMainApply,DiagMainApplyReturn ?: @"never-attempted"]];
-    for (NSString *name in @[@"UIView",@"UILabel",@"SBFLockScreenDateView",@"CSProminentTimeView",@"CSProminentDisplayView",@"_UIAnimatingLabel",@"SBUILegibilityLabel",@"_UILegibilityView",@"_UILegibilityImageView"]) {
+    for (NSString *name in @[@"UIView",@"UILabel",@"SBFLockScreenDateView",@"CSProminentTimeView",@"CSProminentDisplayView",@"_UIAnimatingLabel"]) {
         Class cls=NSClassFromString(name);
         NSArray *selectors=[name isEqualToString:@"UIView"] ? @[@"didMoveToWindow"] : ([cls isSubclassOfClass:UILabel.class] || [name isEqualToString:@"_UIAnimatingLabel"] ? @[@"layoutSubviews",@"didMoveToWindow",@"drawTextInRect:",@"setText:",@"setAttributedText:"] : @[@"layoutSubviews",@"didMoveToWindow"]);
         for (NSString *method in selectors) {
@@ -178,7 +161,6 @@ static NSString *DiagReport(void) {
         [queue addObjectsFromArray:view.subviews];
         BOOL candidate=[NSStringFromClass(view.class) isEqualToString:@"_UIAnimatingLabel"];
         for (UIView *v=view;!candidate && v;v=v.superview) candidate=[NSStringFromClass(v.class) isEqualToString:@"CSProminentTimeView"];
-        if ([view isKindOfClass:UILabel.class] && LegacyClockKind((UILabel *)view)) candidate=YES;
         if (!candidate) continue; candidates++;
         LSGCState *state=objc_getAssociatedObject(view,&StateKey);
         [lines addObject:[NSString stringWithFormat:@"\nCandidate #%lu %@ %p\n%@\n%@",(unsigned long)candidates,NSStringFromClass(view.class),view,DiagScope(view),DiagGeometry(view,state.dateHost)]];

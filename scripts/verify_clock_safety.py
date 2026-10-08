@@ -3,13 +3,11 @@
 from pathlib import Path
 s=(Path(__file__).resolve().parents[1]/'Tweak.xm').read_text()
 apply=s[s.index('static void Apply(UILabel *label) {'):s.index('static void InstallHooks(void) {')]
-ready=s[s.index('static BOOL ClockReplacementReady(UILabel *label) {'):s.index('static BOOL DateReplacementReady(UILabel *label) {')]
-assert 'label.alpha=' not in s and 'label.hidden=' not in s, 'no native visibility mutation'
+ready=s[s.index('static BOOL ClockReplacementReady(UILabel *label) {'):s.index('static void Apply(UILabel *label) {')]
+assert 'if (!clock && !state.hidOriginalLabel)' in apply, 'clock must never hide UIView alpha'
 assert 'label.hidden=YES' not in apply
 assert 'UIView *dateParent=clock ? ClockOverlayParent(label,&hostReason) : DateOverlayParent(label)' in apply
-assert 'UIView *geometry=clock ? label : ImageGlyph(label);' in apply
-assert 'CGPoint center=[geometry convertPoint:CGPointMake(CGRectGetMidX(geometry.bounds)+offsetX' in apply
-assert 'LSGCImageMappedBasis(origin.x,origin.y,x.x,x.y,y.x,y.y,userScale*widthScale,userScale*heightScale)' in apply
+assert 'CGPoint center=[label convertPoint:CGPointMake(CGRectGetMidX(label.bounds)+offsetX' in apply
 assert 'CATransform3DScale(label.layer.transform' not in apply, 'native transform must not be applied twice'
 assert 'if (!image || !HasAlpha(image))' in apply
 assert apply.index('ApplyStyle(label,state,state.dateHost') < apply.index('state.clockCommitted=YES')
@@ -20,7 +18,7 @@ for contract in ['ImportedFont', 's.maskHasInk', 's.dateHost.superlayer==s.clock
                  'DateSignature(label)', 'CGColorGetAlpha', 'LSGCCanReplaceClock(ready)']:
     assert contract in ready, contract
 assert s.count('if (!Rendering && ClockReplacementReady((UILabel *)obj)) { if (main) DiagInc(&DiagSuppress); return; }')==2
-assert 's.clockCommitted=NO; s.dateCommitted=NO; [label setNeedsDisplay]' in s
+assert 's.clockCommitted=NO; [label setNeedsDisplay]' in s
 assert 'class_copyMethodList(cls,&count)' in s
 assert '@"setTransform:",@"setBounds:",@"setCenter:"' not in s
 assert 'CADisplayLink' not in s and 'scheduledTimer' not in s

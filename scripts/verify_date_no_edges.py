@@ -10,13 +10,13 @@ for k in ['edgeCore','edgeWidth','edgeHighlight','edgeEnabled']:
     assert f'Config[@"{k}"]' not in s
 assert '} else ClearEdges(s);' in style
 apply=s[s.index('static void Apply(UILabel *label) {'):s.index('static void InstallHooks(void) {')]
-assert apply.index('ClearEdges(state); // Also purge legacy edges') < apply.index('if (!LSGCImageCacheReusable([state.signature isEqualToString:signature],state.maskHasInk,state.mask.contents!=nil))')
+assert apply.index('ClearEdges(state); // Also purge legacy edges') < apply.index('if (![state.signature isEqualToString:signature])')
 assert '[s.edgeHost removeFromSuperlayer]' in s
 snapshot=s[s.index('static UIImage *SnapshotText('):s.index('// Preserve original highlights')]
 assert '[text removeAttribute:NSStrokeWidthAttributeName range:all]' in snapshot
 assert '[text removeAttribute:NSStrokeColorAttributeName range:all]' in snapshot
 assert 'if (!IsStandaloneTimeLabel(label)) return base;' in s
-assert 'state.dateCommitted=YES' in apply and 'DateReplacementReady(label)' in apply
+assert 'if (!clock && state.hidOriginalLabel) label.alpha=0.0;' in apply
 items=plistlib.loads((r/'Preferences/Resources/Root.plist').read_bytes())['items']
 keys={i['key'] for i in items if 'key' in i}
 for k in ['edgeEnabled','edgePalette','edgeCore','edgeStrength','edgeWidth','edgeHighlight','edgeReveal','independentEdges','edgeColor1','edgeColor2','edgeColor3']:
