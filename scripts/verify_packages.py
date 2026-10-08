@@ -32,7 +32,13 @@ def verify(path):
         info = plistlib.loads(read(BUNDLE + 'Info.plist'))
         assert info['NSPrincipalClass'] == 'LSGCRootListController'
         assert info['CFBundleExecutable'] == 'LockScreenGradientClockPrefs'
-        assert plistlib.loads(read(BUNDLE + 'Root.plist'))['items']
+        settings={x['key']:x for x in plistlib.loads(read(BUNDLE + 'Root.plist'))['items'] if 'key' in x}
+        for key in ['clockMode','clockColor','clockColor1','clockColor2','clockColor3','clockColor4']:
+            assert key not in settings, f'obsolete clock palette shipped: {key}'
+            assert key.encode()+b'\x00' not in dylib, f'obsolete runtime palette shipped: {key}'
+        for key in ['color1','color2','color3','color4','color5','clockOpacity','clockWeight','clockEdgeColor']:
+            assert key in settings, f'missing shared palette/independent ink setting: {key}'
+        assert subprocess.check_output(['dpkg-deb','-f',str(path),'Version'],text=True).strip()=='2.0.7'
         assert len(read(BUNDLE + info['CFBundleExecutable'])) > 0
     print(f'PASS {path}: preference entry, controller binary and resources present')
 
