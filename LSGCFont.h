@@ -7,7 +7,11 @@ static UIFont *LSGCFontAtURL(NSURL *url, NSString *requested, CGFloat size,
     if (!url.isFileURL) return nil;
     NSArray *descriptors=CFBridgingRelease(CTFontManagerCreateFontDescriptorsFromURL((__bridge CFURLRef)url));
     if (!descriptors.count) return nil;
-    CTFontManagerRegisterFontsForURL((__bridge CFURLRef)url,kCTFontManagerScopeProcess,NULL);
+    CFErrorRef error=NULL;
+    BOOL registered=CTFontManagerRegisterFontsForURL((__bridge CFURLRef)url,kCTFontManagerScopeProcess,&error);
+    BOOL already=error && CFErrorGetCode(error)==kCTFontManagerErrorAlreadyRegistered;
+    if (error) CFRelease(error);
+    if (!registered && !already) return nil;
     for (id item in descriptors) {
         CTFontDescriptorRef descriptor=(__bridge CTFontDescriptorRef)item;
         NSString *name=CFBridgingRelease(CTFontDescriptorCopyAttribute(descriptor,kCTFontNameAttribute));

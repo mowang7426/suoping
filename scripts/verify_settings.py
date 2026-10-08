@@ -35,7 +35,9 @@ assert 'RegisterUserFont();' in source[source.index('static void LoadConfig'):so
 assert 'CSProminentDisplayView' in source and '_UIAnimatingLabel' in source
 assert 'class_getInstanceMethod(cls,sel)' in source and 'MSHookMessageEx(cls,sel,hook,&original)' in source
 assert 'if (IsStandaloneTimeLabel(label)) return label.superview;' in source
-assert 'CATransform3DScale(label.layer.transform' in source
+assert 'CATransform3DScale(label.layer.transform' not in source
+assert 'state.dateHost.transform=CATransform3DMakeScale(userScale*widthScale,userScale*heightScale,1)' in source
+assert 'UIView *dateParent=clock ? label : DateOverlayParent(label)' in source
 assert 'mirror.contentScaleFactor=MAX(1,scale)' in source
 assert '4096.0*2048.0' in source and 'TextMaskScale(label)' in source
 assert 'CADisplayLink' not in source and 'scheduledTimer' not in source
