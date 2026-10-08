@@ -136,18 +136,12 @@ static void LoadConfig(void) {
     values[@"fontName"]=@"";
     values[@"fontPath"]=@"";
     values[@"fontFamily"]=@"";
-    values[@"clockMode"]=@0;
     values[@"clockOpacity"]=@1.0;
     values[@"clockWeight"]=@0.8;
     values[@"clockEdgeEnabled"]=@YES;
     values[@"clockEdgeWidth"]=@1.5;
     values[@"clockEdgeStrength"]=@1.0;
     values[@"clockEdgeColor"]=@"#FFFFFF";
-    values[@"clockColor"]=@"#FFFFFF";
-    values[@"clockColor1"]=@"#FC7BE6";
-    values[@"clockColor2"]=@"#6FB9FF";
-    values[@"clockColor3"]=@"#5DF5C4";
-    values[@"clockColor4"]=@"#FFE168";
     for (NSString *key in values.allKeys) {
         id value=CFBridgingRelease(CFPreferencesCopyAppValue((__bridge CFStringRef)key,(__bridge CFStringRef)Domain));
         if (value) values[key]=value;
@@ -500,6 +494,11 @@ static UIImage *SnapshotText(UILabel *label,CGFloat scale) {
         }
         [text removeAttribute:NSBackgroundColorAttributeName range:all];
         [text removeAttribute:NSShadowAttributeName range:all];
+        if (!clock) {
+            // Native attributed outline must not hollow or double the alpha mask.
+            [text removeAttribute:NSStrokeWidthAttributeName range:all];
+            [text removeAttribute:NSStrokeColorAttributeName range:all];
+        }
         mirror.attributedText=text;
     } else mirror.text=label.text;
     if (clock) return SnapshotClockGlyphs(label,mirror.attributedText,scale);
@@ -796,7 +795,7 @@ static UIColor *ShiftedColor(UIColor *color,double hue) {
 }
 static void ApplyStyle(UILabel *label,LSGCState *s,CALayer *host,NSUInteger motionBits) {
     NSUInteger token=StyleToken(motionBits);
-    BOOL styleDirty=s.styleToken!=token || s.motionBits!=motionBits;
+    BOOL styleDirty=s.revision!=Revision || s.styleToken!=token || s.motionBits!=motionBits;
     BOOL standaloneTime=IsStandaloneTimeLabel(label);
     BOOL glass=[Config[@"glassBlend"] boolValue] && (motionBits&8)==0;
     BOOL quiet=(motionBits&7)!=0;
@@ -806,8 +805,11 @@ static void ApplyStyle(UILabel *label,LSGCState *s,CALayer *host,NSUInteger moti
     s.gradient.position=CGPointMake(CGRectGetMidX(host.bounds),CGRectGetMidY(host.bounds));
     s.gradient.opacity=standaloneTime ? LSGCClockFillOpacity([Config[@"clockOpacity"] doubleValue]) : (glass ? Clamp([Config[@"glassTint"] doubleValue],0,0.65) : Clamp([Config[@"opacity"] doubleValue],0,1));
     if (s.dateHost && !standaloneTime) s.gradient.opacity=1;
-    if (!standaloneTime && [Config[@"edgeEnabled"] boolValue] && s.edgeHost)
-        s.gradient.opacity *= Clamp([Config[@"edgeCore"] doubleValue],0,1);
+    if (!standaloneTime && [Config[@"edgeEnabled"] boolValue] && s.edgeHost) {
+        // Small date/lunar strokes must remain readable underneath the contour.
+        CGFloat core=Clamp([Config[@"edgeCore"] doubleValue],0,1);
+        s.gradient.opacity *= s.dateHost ? MAX(0.85,core) : core;
+    }
     if (motionBits&4) s.gradient.opacity*=0.4;
     NSInteger direction=[Config[@"direction"] integerValue];
     double base=[Config[@"customAngleEnabled"] boolValue] ? [Config[@"gradientAngle"] doubleValue] : (direction==1 ? 90 : (direction==2 ? 45 : 0));
@@ -831,26 +833,13 @@ static void ApplyStyle(UILabel *label,LSGCState *s,CALayer *host,NSUInteger moti
             hue=LSGCHueForHour(parts.hour+parts.minute/60.0);
         }
         NSMutableArray *colors=[NSMutableArray array];
-        if (standaloneTime && [Config[@"clockMode"] integerValue]==1) {
-            UIColor *solid=[Color(Config[@"clockColor"],UIColor.whiteColor) colorWithAlphaComponent:1];
-            [colors addObject:(__bridge id)solid.CGColor];
-            [colors addObject:(__bridge id)solid.CGColor];
-            [colors addObject:(__bridge id)solid.CGColor];
-            [colors addObject:(__bridge id)solid.CGColor];
-            [colors addObject:(__bridge id)solid.CGColor];
-        } else if (standaloneTime) {
-            for (NSUInteger i=0;i<4;i++) {
-                UIColor *c=[Color(Config[[NSString stringWithFormat:@"clockColor%lu",(unsigned long)i+1]],UIColor.whiteColor) colorWithAlphaComponent:1];
-                [colors addObject:(__bridge id)c.CGColor];
-            }
-            [colors addObject:colors.lastObject];
-        } else {
-            for (NSUInteger i=0;i<5;i++) {
-                NSString *key=[NSString stringWithFormat:@"color%lu",(unsigned long)i+1];
-                UIColor *c=Color(Config[key],Color(defaults[i],UIColor.whiteColor));
-                if (hue!=0) c=ShiftedColor(c,hue);
-                [colors addObject:(__bridge id)c.CGColor];
-            }
+        for (NSUInteger i=0;i<5;i++) {
+            NSString *key=[NSString stringWithFormat:@"color%lu",(unsigned long)i+1];
+            UIColor *c=Color(Config[key],Color(defaults[i],UIColor.whiteColor));
+            // Main time keeps opaque ink; all palette/shift decisions are shared.
+            if (standaloneTime) c=[c colorWithAlphaComponent:1];
+            if (hue!=0) c=ShiftedColor(c,hue);
+            [colors addObject:(__bridge id)c.CGColor];
         }
         if ([Config[@"reverseColors"] boolValue]) colors=[[[colors reverseObjectEnumerator] allObjects] mutableCopy];
         s.gradient.colors=colors; s.gradient.locations=@[@0,@0.25,@0.5,@0.75,@1];
@@ -1039,6 +1028,10 @@ static void Apply(UILabel *label) {
                 }
                 state.signature=signature;
             }
+            // UIKit may restore a date label's alpha while reusing the cached
+            // signature. Reassert replacement on every event, not only rebuilds,
+            // otherwise native glyphs and the sibling overlay are both visible.
+            if (!clock && state.hidOriginalLabel) label.alpha=0.0;
             // Convert geometry through the source hierarchy on each layout tick.
             CGRect frame=[label convertRect:label.bounds toView:dateParent];
             [CATransaction begin]; [CATransaction setDisableActions:YES];

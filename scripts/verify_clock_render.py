@@ -15,7 +15,7 @@ for marker in ['CTLineCreateWithAttributedString','CTRunGetPositions','CTFontCre
 assert 'renderInContext' not in glyph, 'main clock must not use clipped UILabel backing store'
 assert 'if (clock) return SnapshotClockGlyphs(label,mirror.attributedText,scale);' in s
 style=body('static void ApplyStyle(', 'static void InstallMask(')
-assert 'LSGCClockFillOpacity' in style and style.count('colorWithAlphaComponent:1')>=3
+assert 'LSGCClockFillOpacity' in style and 'if (standaloneTime) c=[c colorWithAlphaComponent:1]' in style
 assert 'if (!standaloneTime && [Config[@"edgeEnabled"]' in style
 clock=style[style.index('if (standaloneTime) {'):]
 for marker in ['ClearEdges(s)','clockEdgeEnabled','clockEdgeStrength','clockEdgeColor',

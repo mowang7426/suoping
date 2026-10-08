@@ -1,2 +1,2 @@
 #pragma once
-#define LSGCVersionString @"2.0.6-full-glyph-outline"
+#define LSGCVersionString @"2.0.7-shared-palette-date"
