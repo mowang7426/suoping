@@ -6,6 +6,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tarfile
+from macho_support import inspect_macho
 
 BUNDLE = 'Library/PreferenceBundles/LockScreenGradientClockPrefs.bundle/'
 ENTRY = 'Library/PreferenceLoader/Preferences/LockScreenGradientClockPrefs.plist'
@@ -23,7 +24,11 @@ def verify(path):
         assert plistlib.loads(read(injection+'.plist'))['Filter']['Bundles']==['com.apple.springboard']
         dylib=read(injection+'.dylib')
         assert len(dylib)>4096
-        for marker in [b'_UIAnimatingLabel', b'CSProminentTimeView', b'SBFLockScreenDateView', b'[LSGC] constructor initialized', b'alpha-zero-wrapper-sibling', b'2.0.9-traditional-native-safe', b'LSGC.ClockOutline', b'clockEdgeWidth', b'clockWeight', b'sibling-wrapper-alpha-not-zero', b'unsupported-host-layer-mask:', b'SBUILegibilityLabel', b'_UILegibilityImageView', b'legacy-image-backed-native-fallback', b'legacy-verified-text-sibling', b'date-readiness-native-fallback']:
+        rootless='rootless' in path.name
+        if rootless:
+            assert all(m.name.lstrip('./').startswith('var/jb/') for m in files), 'rootless file outside /var/jb'
+        print(f'{path}: tweak Mach-O {inspect_macho(dylib,rootless)}')
+        for marker in [b'_UIAnimatingLabel', b'CSProminentTimeView', b'SBFLockScreenDateView', b'[LSGC] constructor initialized', b'alpha-zero-wrapper-sibling', b'2.0.10-image-backed-adapter', b'LSGC.ClockOutline', b'clockEdgeWidth', b'clockWeight', b'sibling-wrapper-alpha-not-zero', b'unsupported-host-layer-mask:', b'SBUILegibilityLabel', b'_UILegibilityImageView', b'legacy-image-backed-native-fallback', b'legacy-verified-text-sibling', b'date-readiness-native-fallback', b'image-backed-mounted-and-native-masked', b'main-clock-image-committed', b'date-image-committed', b'LSGCImageLease', b'imageMaskLease=latest-native-mask']:
             assert marker in dylib, f'missing standalone entry/clock marker: {marker!r}'
         entry = plistlib.loads(read(ENTRY))['entry']
         assert entry['bundle'] == 'LockScreenGradientClockPrefs'
@@ -44,8 +49,11 @@ def verify(path):
         assert '彩边' not in str(root), 'obsolete date edge explanation shipped'
         for key in ['color1','color2','color3','color4','color5','clockOpacity','clockWeight','clockEdgeColor','clockEdgeEnabled','clockEdgeWidth','clockEdgeStrength']:
             assert key in settings, f'missing shared palette/independent ink setting: {key}'
-        assert subprocess.check_output(['dpkg-deb','-f',str(path),'Version'],text=True).strip()=='2.0.9'
-        assert len(read(BUNDLE + info['CFBundleExecutable'])) > 0
+        assert subprocess.check_output(['dpkg-deb','-f',str(path),'Version'],text=True).strip()=='2.0.10'
+        assert info['CFBundleVersion']=='2.0.10'
+        assert info['CFBundleShortVersionString']=='2.0.10'
+        prefs_binary=read(BUNDLE + info['CFBundleExecutable'])
+        print(f'{path}: prefs Mach-O {inspect_macho(prefs_binary,rootless)}')
     print(f'PASS {path}: preference entry, controller binary and resources present')
 
 if __name__ == '__main__':

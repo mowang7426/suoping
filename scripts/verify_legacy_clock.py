@@ -29,4 +29,4 @@ assert 'HasLegibilityImageBranch(label,0)' in body('static UIView *DateOverlayPa
 assert 'state.clockCommitted || state.dateCommitted' in s
 assert '设置页采样不可见不是锁屏像素证据' in s
 assert 'CADisplayLink' not in s and 'scheduledTimer' not in s
-print('OK: family-local installation, exact legacy candidate/verified owner, image-native fallback, no native alpha/hidden/contents writes, stale overlays removed before native glyph pass-through, date-only commit and bounded event caching')
+print('OK: family-local installation, exact legacy candidate/verified owner, unknown-image native fallback plus separately verified image adapter, no native alpha/hidden/contents writes, stale overlays removed before native glyph pass-through, date-only commit and bounded event caching')

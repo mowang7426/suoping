@@ -1,2 +1,2 @@
 #pragma once
-#define LSGCVersionString @"2.0.9-traditional-native-safe"
+#define LSGCVersionString @"2.0.10-image-backed-adapter"

@@ -76,7 +76,9 @@ static void DiagCaptureMask(UIImage *image, CGSize requested, CGFloat scale);
 static NSString *DiagReport(void);
 
 
+static void ImageReleaseLayers(NSArray<CALayer *> *layers);
 @interface LSGCState : NSObject
+@property(nonatomic,strong) NSArray<CALayer *> *imageLeased;
 @property(nonatomic,strong) CAGradientLayer *gradient;
 @property(nonatomic,strong) CALayer *dateHost;
 @property(nonatomic,strong) CAShapeLayer *clockRim;
@@ -103,9 +105,17 @@ static NSString *DiagReport(void);
 @property(nonatomic) BOOL maskHasInk;
 @end
 @implementation LSGCState
-- (void)dealloc { [_dateHost removeFromSuperlayer]; }
+- (void)dealloc { ImageReleaseLayers(_imageLeased); [_dateHost removeFromSuperlayer]; }
 @end
 
+static int ImageRole(UILabel *label);
+static UIView *ImageParent(UILabel *label);
+static BOOL ImageReady(UILabel *label, LSGCState *s);
+static BOOL ImageCommit(UILabel *label, LSGCState *s);
+static void ImageRestore(UILabel *label);
+static void ImageInvalidate(UILabel *label);
+static void InstallImageHooks(void);
+static void RemoveOverlay(UILabel *label);
 static id ReadObject(id object, NSString *name) {
     SEL sel=NSSelectorFromString(name);
     Method m=object ? class_getInstanceMethod([object class],sel) : NULL;
@@ -148,6 +158,13 @@ static void LoadConfig(void) {
         if (value) values[key]=value;
     }
     Config=values; Revision++; RegisterUserFont();
+    // Setting changes invalidate image leases in this main-thread transaction;
+    // no masked native images survive until an asynchronous discovery callback.
+    if (NSThread.isMainThread) {
+        [CATransaction begin]; [CATransaction setDisableActions:YES];
+        @try { for (UILabel *label in Labels.allObjects) if (ImageRole(label)) RemoveOverlay(label); }
+        @finally { [CATransaction commit]; }
+    }
 }
 static UIColor *Color(id input, UIColor *fallback) {
     if (![input isKindOfClass:NSString.class]) return fallback;
@@ -248,6 +265,10 @@ static BOOL TextDrawCovered(UILabel *label) {
     return LabelHooked;
 }
 static UIView *LegacyClockParent(UILabel *label, NSString **reason) {
+    if (ImageRole(label)==1 && ImageParent(label)) {
+        if (reason) *reason=@"legacy-image-backed-adapter";
+        return ImageParent(label);
+    }
     int kind=LegacyClockKind(label);
     UIView *source=kind==1 ? label.superview : label;
     UIView *host=source.superview;
@@ -319,6 +340,9 @@ static UIView *ClockOverlayParent(UILabel *label, NSString **reason) {
     // Never run Visible(label) or a label->window alpha gate before selection.
     UIView *host=ClockSelectOverlayParent(label,reason);
     if (!host) return nil;
+    // Internal UILabel is intentionally hidden by UIKit's image renderer.
+    // The adapter validates glyph/image and wrapper visibility at commit.
+    if (ImageRole(label)==1 && ImageParent(label)==host) return host;
     UIView *wrapper=ClockSourceWrapper(label);
     BOOL bypass=wrapper && host==wrapper.superview && wrapper.class==UIView.class && wrapper.alpha==0.0 && !wrapper.hidden;
     if (!label.window || host.window!=label.window) { if (reason) *reason=@"identity-or-window"; return nil; }
@@ -389,6 +413,7 @@ static UIView *DateOverlayParent(UILabel *label) {
     // transform/animation (notification reflow, swipe and clock shrink).
     // Do not move time out of its animated hierarchy as we do for date vibrancy.
     if (IsStandaloneTimeLabel(label)) return nil; // Main time never enters the date-only route.
+    if (ImageRole(label)==2 && ImageParent(label)) return ImageParent(label);
     if (HasLegibilityImageBranch(label,0)) return nil;
     BOOL subtitle=NO;
     UIView *dateView=nil, *parent=nil;
@@ -863,6 +888,7 @@ static void InstallMask(LSGCState *s,UIImage *image,BOOL native,CALayer *source,
 static void RemoveOverlay(UILabel *label) {
     LSGCState *s=objc_getAssociatedObject(label,&StateKey);
     if (!s) return;
+    ImageRestore(label);
     if (s.didUnclipClock) { label.clipsToBounds=s.originalClipsToBounds; s.didUnclipClock=NO; }
     if (s.clockCommitted || s.dateCommitted) { s.clockCommitted=NO; s.dateCommitted=NO; [label setNeedsDisplay]; }
     s.maskHasInk=NO;
@@ -897,10 +923,12 @@ static NSString *DateSignature(UILabel *label) {
     // Outline outsets/weight rebuild only on text or settings changes.
     return [result stringByAppendingFormat:@"|%@|%@|%@",Config[@"clockWeight"],Config[@"clockEdgeWidth"],Config[@"clockEdgeEnabled"]];
 }
+#include "LSGCImageAdapter.inc"
 // Suppress only the glyph draw, never UIView alpha/hidden. The overlay lives
 // in a verified visible host; native ancestor transforms are inherited once.
 static BOOL ClockReplacementReady(UILabel *label) {
     LSGCState *s=objc_getAssociatedObject(label,&StateKey);
+    if (ImageRole(label)==1 && ImageParent(label)) return s.clockCommitted && ImageReady(label,s) && ImageSuppressed(label,s);
     if (!Hooked || !LabelHooked || !s || !s.clockCommitted || !IsStandaloneTimeLabel(label) ||
         (!LegacyClockKind(label) && ![s.hostSelection isEqualToString:@"alpha-zero-wrapper-sibling"])) return NO;
     if (LegacyClockKind(label)) {
@@ -934,6 +962,7 @@ static BOOL ClockReplacementReady(UILabel *label) {
 }
 static BOOL DateReplacementReady(UILabel *label) {
     LSGCState *s=objc_getAssociatedObject(label,&StateKey);
+    if (ImageRole(label)==2 && ImageParent(label)) return s.dateCommitted && ImageReady(label,s) && ImageSuppressed(label,s);
     UIView *parent=DateOverlayParent(label);
     if (!s || !s.dateCommitted || IsStandaloneTimeLabel(label) ||
         ![Config[@"enabled"] boolValue] || ![Config[@"dateGradient"] boolValue] ||
@@ -974,6 +1003,12 @@ static void Apply(UILabel *label) {
     BOOL isGlassLabel=GlassClass && [label isKindOfClass:GlassClass];
     BOOL clock=IsStandaloneTimeLabel(label);
     if (clock) { DiagInc(&DiagMainApply); DiagMainApplyReturn=@"entered"; }
+    if (ImageParent(label) && !ImageGlyph(label)) {
+        DiagApplyReturn=@"image-glyph-not-visible-or-not-ready";
+        ImageLastReason=DiagApplyReturn;
+        if (clock) { DiagMainApplyReturn=DiagApplyReturn; DiagCaptureFailure(label,DiagApplyReturn); }
+        RemoveOverlay(label); return;
+    }
     NSString *hostReason=nil;
     UIView *dateParent=clock ? ClockOverlayParent(label,&hostReason) : DateOverlayParent(label);
     if (clock && !dateParent) {
@@ -1002,16 +1037,23 @@ static void Apply(UILabel *label) {
         if (!state.dateHost) { state.dateHost=[CALayer layer]; state.dateHost.name=@"LSGC.DateOverlay"; }
         NSString *signature=DateSignature(label);
         @try {
-            if (![state.signature isEqualToString:signature]) {
+            if (!LSGCImageCacheReusable([state.signature isEqualToString:signature],state.maskHasInk,state.mask.contents!=nil)) {
                 UIImage *image=nil;
                 if (clock) DiagMask=@{@"source":@"SnapshotText/main-clock",@"status":@"attempted"};
-                @try { Rendering=YES; image=SnapshotText(label,TextMaskScale(label)); }
+                @try { Rendering=YES; image=(!clock && ImageParent(label)) ? ImageDateMask(label) : SnapshotText(label,TextMaskScale(label)); }
                 @finally { Rendering=NO; }
                 if (!image || !HasAlpha(image)) { DiagApplyReturn=@"mask-no-ink"; if (clock) DiagCaptureFailure(label,DiagApplyReturn); RemoveOverlay(label); state.maskMode=@"遮罩无有效像素，保留系统文字"; return; }
                 state.maskHasInk=YES;
                 InstallMask(state,image,NO,nil,state.dateHost,label);
+                if (!clock && ImageParent(label)) {
+                    UIView *glyph=ImageGlyph(label);
+                    state.mask.contentsGravity=glyph.layer.contentsGravity;
+                    state.mask.contentsRect=glyph.layer.contentsRect;
+                    state.mask.bounds=(CGRect){CGPointZero,glyph.bounds.size};
+                    state.mask.position=CGPointMake(glyph.bounds.size.width*.5,glyph.bounds.size.height*.5);
+                }
                 state.signature=signature;
-            }
+            } else if (ImageParent(label)) { DiagInc(&ImageCacheHits); }
             // Convert geometry through the source hierarchy on each layout tick.
             CGRect frame=[label convertRect:label.bounds toView:dateParent];
             [CATransaction begin]; [CATransaction setDisableActions:YES];
@@ -1028,18 +1070,19 @@ static void Apply(UILabel *label) {
                 state.dateHost.bounds=(CGRect){CGPointZero,clock ? state.clockCanvasSize : label.bounds.size};
                 state.dateHost.position=CGPointMake(CGRectGetMidX(frame)+offsetX,CGRectGetMidY(frame)+offsetY);
                 state.dateHost.transform=CATransform3DMakeScale(sx,sy,1);
-                if (clock) {
-                    // Map basis vectors into the chosen host, retaining source
-                    // rotation/shear exactly once; host inherits all higher lock-screen transforms.
-                    CGPoint origin=[label convertPoint:CGPointZero toView:dateParent];
-                    CGPoint x=[label convertPoint:CGPointMake(1,0) toView:dateParent];
-                    CGPoint y=[label convertPoint:CGPointMake(0,1) toView:dateParent];
-                    CGPoint center=[label convertPoint:CGPointMake(CGRectGetMidX(label.bounds)+offsetX,CGRectGetMidY(label.bounds)+offsetY) toView:dateParent];
+                if (clock || ImageParent(label)) {
+                    // Dates follow visible native glyph geometry, not hidden text geometry.
+                    UIView *geometry=clock ? label : ImageGlyph(label);
+                    if (!clock) state.dateHost.bounds=(CGRect){CGPointZero,geometry.bounds.size};
+                    // Host inherits all higher transforms exactly once.
+                    CGPoint origin=[geometry convertPoint:CGPointZero toView:dateParent];
+                    CGPoint x=[geometry convertPoint:CGPointMake(1,0) toView:dateParent];
+                    CGPoint y=[geometry convertPoint:CGPointMake(0,1) toView:dateParent];
+                    CGPoint center=[geometry convertPoint:CGPointMake(CGRectGetMidX(geometry.bounds)+offsetX,CGRectGetMidY(geometry.bounds)+offsetY) toView:dateParent];
+                    LSGCImageBasis basis=LSGCImageMappedBasis(origin.x,origin.y,x.x,x.y,y.x,y.y,userScale*widthScale,userScale*heightScale);
                     state.dateHost.anchorPoint=CGPointMake(.5,.5);
                     state.dateHost.position=center;
-                    state.dateHost.transform=CATransform3DMakeAffineTransform(CGAffineTransformMake(
-                        (x.x-origin.x)*userScale*widthScale,(x.y-origin.y)*userScale*widthScale,
-                        (y.x-origin.x)*userScale*heightScale,(y.y-origin.y)*userScale*heightScale,0,0));
+                    state.dateHost.transform=CATransform3DMakeAffineTransform(CGAffineTransformMake(basis.a,basis.b,basis.c,basis.d,0,0));
                 }
                 if (state.dateHost.superlayer!=dateParent.layer) [dateParent.layer addSublayer:state.dateHost];
                 if (clock && label.window) {
@@ -1056,6 +1099,13 @@ static void Apply(UILabel *label) {
                 }
                 UpdateParallax();
                 ApplyStyle(label,state,state.dateHost,MotionBits(dateParent)|8);
+                if (!clock && ImageParent(label)) {
+                    CALayer *glyphLayer=ImageGlyph(label).layer;
+                    CALayer *shown=(CALayer *)glyphLayer.presentationLayer ?: glyphLayer;
+                    state.dateHost.opacity=MIN(glyphLayer.opacity,shown.opacity);
+                }
+                if (ImageParent(label) && !ImageCommit(label,state))
+                    @throw [NSException exceptionWithName:@"ImageCommitFailed" reason:nil userInfo:nil];
             } @finally { [CATransaction commit]; }
             if (!clock) {
                 state.dateCommitted=YES;
@@ -1072,7 +1122,7 @@ static void Apply(UILabel *label) {
                 }
                 [label setNeedsDisplay];
             }
-            DiagApplyReturn=clock ? @"main-clock-committed" : @"date-only";
+            DiagApplyReturn=clock ? (ImageParent(label) ? @"main-clock-image-committed" : @"main-clock-committed") : (ImageParent(label) ? @"date-image-committed" : @"date-only");
             if (clock) DiagMainApplyReturn=DiagApplyReturn;
             state.maskMode=clock ? @"主时间独立宿主渐变（安全提交）" : @"日期容器外渐变";
         } @catch (NSException *exception) {
@@ -1190,7 +1240,7 @@ static void InstallHooks(void) {
     NSString *previousReport=HookReport;
     HookReport=[NSString stringWithFormat:@"standalone-native-clock; UILabel/UIView=%@; %@",
         LabelHooked ? @"已安装" : @"失败",[status componentsJoinedByString:@"; "]];
-    HookReport=[HookReport stringByAppendingFormat:@"; prominent-ready=%d legacy-ready=%d; image-backed=untouched-native-fallback",ProminentHooked,LegacyHooked];
+    HookReport=[HookReport stringByAppendingFormat:@"; prominent-ready=%d legacy-ready=%d; image-backed=event-cached-adapter",ProminentHooked,LegacyHooked];
     if (![previousReport isEqualToString:HookReport]) NSLog(@"[LSGC] installation: %@",HookReport);
 }
 static void (*OrigViewMove)(id,SEL);
@@ -1230,14 +1280,15 @@ static void LabelMove(id obj,SEL sel) {
     DiagInc(&DiagMove); OrigLabelMove(obj,sel); Schedule((UILabel *)obj);
 }
 static void LabelText(id obj,SEL sel,id value) {
-    OrigLabelText(obj,sel,value); Schedule((UILabel *)obj);
+    ImageInvalidate((UILabel *)obj); OrigLabelText(obj,sel,value); Schedule((UILabel *)obj);
 }
 static void LabelAttributed(id obj,SEL sel,id value) {
-    OrigLabelAttributed(obj,sel,value); Schedule((UILabel *)obj);
+    ImageInvalidate((UILabel *)obj); OrigLabelAttributed(obj,sel,value); Schedule((UILabel *)obj);
 }
 static void InstallLabelHooks(void) {
     if (LabelHooked) return;
     Class cls=UILabel.class;
+    InstallImageHooks();
     Method layout=class_getInstanceMethod(cls,@selector(layoutSubviews));
     Method move=class_getInstanceMethod(cls,@selector(didMoveToWindow));
     Method text=class_getInstanceMethod(cls,@selector(setText:));
@@ -1363,7 +1414,7 @@ static void WriteDiagnostics(void) {
         if (date) {
             dates++; dateActive+=DateReplacementReady(label);
             if (dateDetails.count<12) [dateDetails addObject:[NSString stringWithFormat:@"%@ bounds=%@ 可见=%d 锁屏=%d 渐变=%d 浓度=%.2f 模式=%@",
-                NSStringFromClass(label.class),NSStringFromCGRect(label.bounds),Visible(label),lock,
+                NSStringFromClass(label.class),NSStringFromCGRect(label.bounds),ImageParent(label) ? ImageGlyph(label)!=nil : Visible(label),lock,
                 s.gradient.superlayer!=nil,s.gradient.opacity,s.maskMode?:@"未渲染"]];
         }
         if (time && details.count<6) {
@@ -1372,22 +1423,22 @@ static void WriteDiagnostics(void) {
             for (NSUInteger i=0;v && i<12;i++,v=v.superview) [chain addObject:NSStringFromClass(v.class)];
             NSString *blocked=@"无";
             if (!label.window) blocked=@"未入窗";
-            for (UIView *ancestor=label; ancestor; ancestor=ancestor.superview) {
+            for (UIView *ancestor=ImageParent(label) ?: label; ancestor; ancestor=ancestor.superview) {
                 if (ancestor.hidden || ancestor.alpha<0.01) {
                     blocked=[NSString stringWithFormat:@"%@ hidden=%d alpha=%.3f",NSStringFromClass(ancestor.class),ancestor.hidden,ancestor.alpha]; break;
                 }
             }
             NSString *legacyReason=nil;
             if (LegacyClockKind(label)) LegacyClockParent(label,&legacyReason);
-            [details addObject:[NSString stringWithFormat:@"层级=%@ 传统选择=%@ 原生image路径=%@",LegacyClockKind(label)?@"traditional":@"prominent",legacyReason?:@"not-legacy",LegacyClockKind(label) && HasLegibilityImageBranch(LegacyClockKind(label)==1?label.superview:label,0)?@"保持原样":@"无/不适用"]];
+            [details addObject:[NSString stringWithFormat:@"层级=%@ 传统选择=%@ 原生image路径=%@",LegacyClockKind(label)?@"traditional":@"prominent",legacyReason?:@"not-legacy",LegacyClockKind(label) && HasLegibilityImageBranch(LegacyClockKind(label)==1?label.superview:label,0)?@"缓存替换/最新原生遮罩租约":@"无/不适用"]];
             NSString *mode=s.maskMode ?: (!Hooked ? @"Hook未就绪，保留系统时间" : (!Visible(label) ? @"原生层不可见，未尝试替换" : @"待布局/渲染，保留系统时间"));
-            [details addObject:[NSString stringWithFormat:@"主时间候选=是 时间形态=%@ 锁屏范围=%@ 可见=%@ 分隔符=%@\nbounds=%@ hidden=%d alpha=%.3f 不可见原因=%@\n已渲染=%@ 模式=%@\n%@",TimeText(label.text ?: label.attributedText.string)?@"是":@"否",lock?@"是":@"否",Visible(label)?@"是":@"否",SeparatorCodes(label.text ?: label.attributedText.string),NSStringFromCGRect(label.bounds),label.hidden,label.alpha,blocked,ClockReplacementReady(label)?@"是":@"否",mode,[chain componentsJoinedByString:@" > "]]];
+            [details addObject:[NSString stringWithFormat:@"主时间候选=是 时间形态=%@ 锁屏范围=%@ 可见=%@ 分隔符=%@\nbounds=%@ hidden=%d alpha=%.3f 不可见原因=%@\n已渲染=%@ 模式=%@\n%@",TimeText(label.text ?: label.attributedText.string)?@"是":@"否",lock?@"是":@"否",(ImageParent(label) ? ImageGlyph(label)!=nil : Visible(label))?@"是":@"否",SeparatorCodes(label.text ?: label.attributedText.string),NSStringFromCGRect(label.bounds),label.hidden,label.alpha,blocked,ClockReplacementReady(label)?@"是":@"否",mode,[chain componentsJoinedByString:@" > "]]];
         }
     }
     NSString *report=[NSString stringWithFormat:@"兼容层 %@\n类已加载（原生四类）：%@\nHook 已安装：%@\nHook 明细：%@\n扫描发现（时间+日期）：%lu\n主时间扫描发现：%lu\n主时间锁屏范围命中：%lu\n主时间安全门当前通过（不代表像素上屏）：%lu\n请求开关：%@\n实际时间替换：%@\n构造器初始化：%@\n\n%@",
         LSGCVersionString,NativeClassesLoaded?@"是":@"否",Hooked?@"是":@"否",HookReport?:@"无",(unsigned long)Labels.allObjects.count,(unsigned long)clocks,(unsigned long)scoped,(unsigned long)active,[Config[@"enabled"] boolValue]?@"开":@"关",
-        ([Config[@"enabled"] boolValue] && Hooked && active)?@"当前满足抑制门禁（需主时间draw计数与截图佐证）":@"未生效（保留系统时间）",StartupComplete?@"完成":@"未完成",[details componentsJoinedByString:@"\n\n"]];
-    report=[report stringByAppendingFormat:@"\n按层级Hook门禁：prominent=%d traditional=%d（不要求四类同时加载）\n传统image-backed策略：保留系统，不修改alpha/hidden/contents，不单独抑制UILabel。\n设置页采样不可见不是锁屏像素证据。",ProminentHooked,LegacyHooked];
+        ([Config[@"enabled"] boolValue] && Hooked && active)?@"当前满足挂载/抑制门禁（图像路径看imageAdapter计数；仍需亮屏截图佐证）":@"未生效（保留系统时间）",StartupComplete?@"完成":@"未完成",[details componentsJoinedByString:@"\n\n"]];
+    report=[report stringByAppendingFormat:@"\n按层级Hook门禁：prominent=%d traditional=%d（不要求四类同时加载）\n传统image-backed策略：事件缓存适配器，同legibility容器挂载；不修改alpha/hidden/contents，使用可恢复原生图像遮罩租约。\n设置页采样不可见不是锁屏像素证据。",ProminentHooked,LegacyHooked];
     NSMutableArray *tree=[NSMutableArray array];
     for (UIView *root in DateViews.allObjects) {
         NSMutableArray<UIView *> *queue=[NSMutableArray arrayWithObject:root];

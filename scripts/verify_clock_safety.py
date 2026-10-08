@@ -7,7 +7,9 @@ ready=s[s.index('static BOOL ClockReplacementReady(UILabel *label) {'):s.index('
 assert 'label.alpha=' not in s and 'label.hidden=' not in s, 'no native visibility mutation'
 assert 'label.hidden=YES' not in apply
 assert 'UIView *dateParent=clock ? ClockOverlayParent(label,&hostReason) : DateOverlayParent(label)' in apply
-assert 'CGPoint center=[label convertPoint:CGPointMake(CGRectGetMidX(label.bounds)+offsetX' in apply
+assert 'UIView *geometry=clock ? label : ImageGlyph(label);' in apply
+assert 'CGPoint center=[geometry convertPoint:CGPointMake(CGRectGetMidX(geometry.bounds)+offsetX' in apply
+assert 'LSGCImageMappedBasis(origin.x,origin.y,x.x,x.y,y.x,y.y,userScale*widthScale,userScale*heightScale)' in apply
 assert 'CATransform3DScale(label.layer.transform' not in apply, 'native transform must not be applied twice'
 assert 'if (!image || !HasAlpha(image))' in apply
 assert apply.index('ApplyStyle(label,state,state.dateHost') < apply.index('state.clockCommitted=YES')
