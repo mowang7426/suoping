@@ -39,11 +39,13 @@ static NSDictionary *DiagGate(UILabel *label) {
     gate[@"failedReasons"]=failed;
     gate[@"label"]=[NSString stringWithFormat:@"%@ %p",NSStringFromClass(label.class),label];
     gate[@"geometry"]=DiagGeometry(label,s.dateHost);
-    NSString *selection=nil; UIView *host=ClockOverlayParent(label,&selection);
-    gate[@"hostSelection"]=s.hostSelection ?: selection ?: @"not-selected";
+    NSString *selection=nil, *hostFailure=nil;
+    UIView *host=ClockSelectOverlayParent(label,&selection);
+    UIView *validatedHost=ClockOverlayParent(label,&hostFailure);
+    gate[@"hostSelection"]=selection ?: @"not-selected";
     gate[@"hostClass"]=host ? NSStringFromClass(host.class) : @"none";
-    gate[@"hostWindowRect"]=host ? NSStringFromCGRect([host convertRect:host.bounds toView:label.window]) : @"none";
-    gate[@"hostFailureReason"]=host ? @"none" : (selection ?: @"unknown");
+    gate[@"hostWindowRect"]=host && label.window ? NSStringFromCGRect([host convertRect:host.bounds toView:label.window]) : @"none";
+    gate[@"hostFailureReason"]=validatedHost ? @"none" : (hostFailure ?: @"unknown");
     return gate;
 }
 static void DiagCaptureFailure(UILabel *label, NSString *reason) {

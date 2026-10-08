@@ -24,7 +24,7 @@ assert '@"setTransform:",@"setBounds:",@"setCenter:"' not in s
 assert 'CADisplayLink' not in s and 'scheduledTimer' not in s
 print('OK: commit-after-attach/style, mask/font/visibility/clip guards, glyph-only fallback, single native transform, no polling')
 
-helper=s[s.index('static UIView *ClockOverlayParent'):s.index('static UIView *DateOverlayParent')]
+helper=s[s.index('static UIView *ClockSelectOverlayParent'):s.index('static UIView *DateOverlayParent')]
 assert 'LSGCAllowSourceWrapper(true,' in helper
 assert 'v.hidden || v.layer.hidden' in helper
 assert 'bypass && v==wrapper' in helper
