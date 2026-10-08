@@ -7,8 +7,9 @@ static inline LSGCClockCanvas LSGCFullClockCanvas(double sourceW, double sourceH
                                                 double inkW, double inkH,
                                                 double weight, double outline) {
     double p=std::ceil(std::fmax(0,weight)+std::fmax(0,outline))+2;
-    return {std::ceil(std::fmax(sourceW,inkW+2*p)),
-            std::ceil(std::fmax(sourceH,inkH+2*p)),p};
+    LSGCClockCanvas canvas={std::ceil(std::fmax(sourceW,inkW+2*p)),
+                           std::ceil(std::fmax(sourceH,inkH+2*p)),p};
+    return canvas;
 }
 static inline double LSGCClockFillOpacity(double value) {
     // Explicit zero still invokes the native fallback. Migrate legacy glass
