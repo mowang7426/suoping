@@ -31,11 +31,11 @@ assert 'host.window!=label.window' in host
 assert 'v.clipsToBounds || v.layer.masksToBounds' in host
 assert 'effectiveOpacity<0.01' in host
 assert apply.index('ClockOverlayParent(label,&hostReason)') < apply.index('!Visible(dateParent)') < apply.index('SnapshotText(label,TextMaskScale(label))')
-assert apply.index('SnapshotText(label,TextMaskScale(label))') < apply.index('addSublayer:state.dateHost') < apply.index('ApplyStyle(label,state,state.dateHost') < apply.index('state.clockCommitted=YES') < apply.index('if (!ClockReplacementReady(label))')
+assert apply.index('SnapshotText(label,TextMaskScale(label))') < apply.index('addSublayer:state.dateHost') < apply.index('ApplyStyle(label,state,state.dateHost') < apply.index('if (!ClockReplacementReadyForCommit(label))') < apply.index('state.clockCommitted=YES')
 assert 'if (!clock && !state.hidOriginalLabel)' in apply
 assert 'if (IsStandaloneTimeLabel(label)) return nil;' in s
 schedule=body('static void Schedule(UILabel *label) {','static CALayer *MaskOwner(')
 assert 'Visible(' not in schedule and 'alpha<' not in schedule
-ready=body('static BOOL ClockReplacementReady(UILabel *label) {','static void Apply(UILabel *label) {')
+ready=body('static BOOL ClockReplacementReadyForCommit(UILabel *label) {','static void Apply(UILabel *label) {')
 assert 'Visible(label)' not in ready and 'ClockHostVisible(label,s)' in ready
 print('OK: strict identity -> sibling selection -> source-only checks -> true host visibility/clip -> snapshot -> mount/style -> readiness -> glyph suppression; no generic main-clock pre-gate')
