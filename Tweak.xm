@@ -100,6 +100,9 @@ static NSString *DiagReport(void);
 @property(nonatomic) BOOL hidOriginalLabel;
 @property(nonatomic) CGFloat originalAlpha;
 @property(nonatomic) BOOL originalHidden;
+@property(nonatomic,strong) UIImage *cachedMask;
+@property(nonatomic,copy) NSString *cachedMaskSignature;
+@property(nonatomic,copy) NSString *failedSignature;
 @end
 @implementation LSGCState
 - (void)dealloc { [_dateHost removeFromSuperlayer]; }
@@ -789,6 +792,7 @@ static void InstallMask(LSGCState *s,UIImage *image,BOOL native,CALayer *source,
 static void RemoveOverlay(UILabel *label) {
     LSGCState *s=objc_getAssociatedObject(label,&StateKey);
     if (!s) return;
+    BOOL clock=IsStandaloneTimeLabel(label);
     if (s.hidOriginalLabel) {
         label.alpha=s.originalAlpha;
         label.hidden=s.originalHidden;
@@ -796,13 +800,15 @@ static void RemoveOverlay(UILabel *label) {
     }
     if (s.didUnclipClock) { label.clipsToBounds=s.originalClipsToBounds; s.didUnclipClock=NO; }
     if (s.clockCommitted) { s.clockCommitted=NO; [label setNeedsDisplay]; }
-    s.maskHasInk=NO;
+    if (!clock) s.maskHasInk=NO;
     s.ticket++; s.busy=NO; s.dirty=NO;
     [s.gradient removeFromSuperlayer]; [s.gradient removeAllAnimations];
     [s.dateHost removeFromSuperlayer];
     if (s.clockRim) [s.clockRim removeFromSuperlayer];
     ClearEdges(s);
-    s.signature=nil; s.revision=0;
+    // A visibility/host rejection detaches the submission, not the reusable
+    // glyph resource. Text/config invalidation explicitly clears this cache.
+    if (!clock) { s.signature=nil; s.revision=0; }
 }
 // Render at the final clock magnification, not native label resolution.
 // Cap each dimension and total pixels; no bitmap work for position/transform updates.
@@ -892,13 +898,26 @@ static void Apply(UILabel *label) {
         if (clock) { state.clockHost=dateParent; state.hostSelection=hostReason; }
         if (!state.dateHost) { state.dateHost=[CALayer layer]; state.dateHost.name=@"LSGC.DateOverlay"; }
         NSString *signature=DateSignature(label);
+        if (clock && [state.failedSignature isEqualToString:signature]) {
+            // Stable failure latch: no retry loop until a real input signature changes.
+            RemoveOverlay(label); state.maskMode=@"失败锁存，保留系统文字"; return;
+        }
         @try {
-            if (![state.signature isEqualToString:signature]) {
-                UIImage *image=nil;
-                if (clock) DiagMask=@{@"source":@"SnapshotText/main-clock",@"status":@"attempted"};
-                @try { Rendering=YES; image=SnapshotText(label,TextMaskScale(label)); }
-                @finally { Rendering=NO; }
-                if (!image || !HasAlpha(image)) { DiagApplyReturn=@"mask-no-ink"; if (clock) DiagCaptureFailure(label,DiagApplyReturn); RemoveOverlay(label); state.maskMode=@"遮罩无有效像素，保留系统文字"; return; }
+            BOOL attachedCached=clock && state.gradient.superlayer==state.dateHost;
+            BOOL needsMask=!([state.signature isEqualToString:signature] && (!clock || attachedCached));
+            if (needsMask) {
+                UIImage *image=(clock && [state.cachedMaskSignature isEqualToString:signature]) ? state.cachedMask : nil;
+                if (!image) {
+                    if (clock) DiagMask=@{ @"source":@"SnapshotText/main-clock", @"status":@"attempted" };
+                    @try { Rendering=YES; image=SnapshotText(label,TextMaskScale(label)); }
+                    @finally { Rendering=NO; }
+                    if (!image || !HasAlpha(image)) {
+                        DiagApplyReturn=@"mask-no-ink"; if (clock) DiagCaptureFailure(label,DiagApplyReturn);
+                        if (clock) state.failedSignature=signature;
+                        RemoveOverlay(label); state.maskMode=@"遮罩无有效像素，保留系统文字"; return;
+                    }
+                    if (clock) { state.cachedMask=image; state.cachedMaskSignature=signature; state.failedSignature=nil; }
+                }
                 state.maskHasInk=YES;
                 InstallMask(state,image,NO,nil,state.dateHost,label);
                 // Replace the system glyph while preserving its layout and update path.
@@ -963,6 +982,7 @@ static void Apply(UILabel *label) {
                 state.clockCommitted=YES;
                 if (!ClockReplacementReady(label)) {
                     DiagApplyReturn=@"readiness-rejected"; DiagCaptureFailure(label,DiagApplyReturn);
+                    state.failedSignature=signature;
                     RemoveOverlay(label); state.maskMode=@"时间替换未就绪，保留系统时间"; return;
                 }
                 [label setNeedsDisplay];
@@ -1113,11 +1133,27 @@ static void LabelLayout(id obj,SEL sel) {
 static void LabelMove(id obj,SEL sel) {
     DiagInc(&DiagMove); OrigLabelMove(obj,sel); Schedule((UILabel *)obj);
 }
+static void InvalidateClockResource(UILabel *label) {
+    if (!IsStandaloneTimeLabel(label)) return;
+    LSGCState *s=objc_getAssociatedObject(label,&StateKey);
+    if (!s) return;
+    RemoveOverlay(label);
+    s.cachedMask=nil; s.cachedMaskSignature=nil; s.failedSignature=nil;
+    s.signature=nil; s.maskHasInk=NO;
+}
 static void LabelText(id obj,SEL sel,id value) {
-    OrigLabelText(obj,sel,value); Schedule((UILabel *)obj);
+    UILabel *label=(UILabel *)obj;
+    NSString *before=[label.text copy];
+    OrigLabelText(obj,sel,value);
+    if (!((before==label.text) || [before isEqualToString:label.text])) InvalidateClockResource(label);
+    Schedule(label);
 }
 static void LabelAttributed(id obj,SEL sel,id value) {
-    OrigLabelAttributed(obj,sel,value); Schedule((UILabel *)obj);
+    UILabel *label=(UILabel *)obj;
+    NSAttributedString *before=[label.attributedText copy];
+    OrigLabelAttributed(obj,sel,value);
+    if (!((before==label.attributedText) || [before isEqualToAttributedString:label.attributedText])) InvalidateClockResource(label);
+    Schedule(label);
 }
 static void InstallLabelHooks(void) {
     if (LabelHooked) return;
