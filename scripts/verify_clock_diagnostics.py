@@ -18,7 +18,8 @@ assert 'if (clock) DiagCaptureMask(image,label.bounds.size,scale)' in s
 for reason in ('hook-not-ready','no-superview','mask-no-ink','readiness-rejected','invalid-bounds','empty-text','exception:'):
     assert reason in s, reason
 failure=s[s.index('if (!ClockReplacementReady(label)) {'):s.index('[label setNeedsDisplay];',s.index('if (!ClockReplacementReady(label)) {'))]
-assert failure.index('DiagCaptureFailure(label,DiagApplyReturn)') < failure.index('RemoveOverlay(label)')
+assert failure.index('DiagCaptureFailure(label,DiagApplyReturn)') < min(i for i in (failure.find('RemoveOverlay(label)'), failure.find('RemoveOverlayQuiet(label)')) if i >= 0)
+assert 'setNeedsDisplay' not in failure
 for key in ('identity','hookReady','committed','enabled','fontReady','maskHasInk','attached','visible','onScreen','signatureCurrent','opacity','failedReasons','capturedBeforeRemoval','methodOwner','originalIMPExists','currentIMPExists','currentMatchesExpectedHook','maskPixelBoundingBox','HasAlpha','requestedScale','strictScopeRequested','rejectedReason','windowRect','overlayIntersection','font/clock config','hostSelection','hostFailureReason','hostClass','hostWindowRect'):
     assert key in d, key
 assert 'tree.count<' not in d and 'candidates<' not in d, 'candidate report must not silently truncate'

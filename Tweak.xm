@@ -102,7 +102,9 @@ static NSString *DiagReport(void);
 @property(nonatomic) BOOL originalHidden;
 @property(nonatomic,strong) UIImage *cachedMask;
 @property(nonatomic,copy) NSString *cachedMaskSignature;
-@property(nonatomic,copy) NSString *failedSignature;
+@property(nonatomic,copy) NSString *failedResourceKey;
+@property(nonatomic) NSUInteger resourceGeneration;
+@property(nonatomic) NSUInteger submissionGeneration;
 @end
 @implementation LSGCState
 - (void)dealloc { [_dateHost removeFromSuperlayer]; }
@@ -812,6 +814,12 @@ static void RemoveOverlay(UILabel *label) {
 }
 // Render at the final clock magnification, not native label resolution.
 // Cap each dimension and total pixels; no bitmap work for position/transform updates.
+static void RemoveOverlayQuiet(UILabel *label) {
+    // Host/readiness failure is transient input; never ask native draw to retry.
+    LSGCState *s=objc_getAssociatedObject(label,&StateKey);
+    if (s) s.clockCommitted=NO;
+    RemoveOverlay(label);
+}
 static CGFloat TextMaskScale(UILabel *label) {
     if (!IsStandaloneTimeLabel(label)) return MaskScale(label.bounds.size);
     CGFloat zoom=Clamp([Config[@"clockScale"] doubleValue],0.80,3.50);
@@ -875,9 +883,9 @@ static void Apply(UILabel *label) {
     UIView *dateParent=clock ? ClockOverlayParent(label,&hostReason) : DateOverlayParent(label);
     if (clock && !dateParent) {
         LSGCState *failed=objc_getAssociatedObject(label,&StateKey); failed.hostSelection=hostReason;
-        DiagApplyReturn=hostReason; DiagCaptureFailure(label,DiagApplyReturn); RemoveOverlay(label); return;
+        DiagApplyReturn=hostReason; DiagCaptureFailure(label,DiagApplyReturn); RemoveOverlayQuiet(label); return;
     }
-    if (clock && (!Hooked || !label.superview)) { DiagApplyReturn=!Hooked ? @"hook-not-ready" : @"no-superview"; DiagCaptureFailure(label,DiagApplyReturn); RemoveOverlay(label); return; }
+    if (clock && (!Hooked || !label.superview)) { DiagApplyReturn=!Hooked ? @"hook-not-ready" : @"no-superview"; DiagCaptureFailure(label,DiagApplyReturn); RemoveOverlayQuiet(label); return; }
     if (!isGlassLabel && dateParent) {
         NSString *displayText=label.text ?: label.attributedText.string;
         BOOL allowDate=TimeText(displayText) || [Config[@"dateGradient"] boolValue];
@@ -898,9 +906,9 @@ static void Apply(UILabel *label) {
         if (clock) { state.clockHost=dateParent; state.hostSelection=hostReason; }
         if (!state.dateHost) { state.dateHost=[CALayer layer]; state.dateHost.name=@"LSGC.DateOverlay"; }
         NSString *signature=DateSignature(label);
-        if (clock && [state.failedSignature isEqualToString:signature]) {
+        if (clock && [state.failedResourceKey isEqualToString:signature]) {
             // Stable failure latch: no retry loop until a real input signature changes.
-            RemoveOverlay(label); state.maskMode=@"失败锁存，保留系统文字"; return;
+            RemoveOverlayQuiet(label); state.maskMode=@"资源失败锁存，保留系统文字"; return;
         }
         @try {
             BOOL attachedCached=clock && state.gradient.superlayer==state.dateHost;
@@ -913,10 +921,10 @@ static void Apply(UILabel *label) {
                     @finally { Rendering=NO; }
                     if (!image || !HasAlpha(image)) {
                         DiagApplyReturn=@"mask-no-ink"; if (clock) DiagCaptureFailure(label,DiagApplyReturn);
-                        if (clock) state.failedSignature=signature;
-                        RemoveOverlay(label); state.maskMode=@"遮罩无有效像素，保留系统文字"; return;
+                        if (clock) state.failedResourceKey=signature;
+                        RemoveOverlayQuiet(label); state.maskMode=@"遮罩无有效像素，保留系统文字"; return;
                     }
-                    if (clock) { state.cachedMask=image; state.cachedMaskSignature=signature; state.failedSignature=nil; }
+                    if (clock) { state.cachedMask=image; state.cachedMaskSignature=signature; state.failedResourceKey=nil; }
                 }
                 state.maskHasInk=YES;
                 InstallMask(state,image,NO,nil,state.dateHost,label);
@@ -982,8 +990,10 @@ static void Apply(UILabel *label) {
                 state.clockCommitted=YES;
                 if (!ClockReplacementReady(label)) {
                     DiagApplyReturn=@"readiness-rejected"; DiagCaptureFailure(label,DiagApplyReturn);
-                    state.failedSignature=signature;
-                    RemoveOverlay(label); state.maskMode=@"时间替换未就绪，保留系统时间"; return;
+                    // Host/window/geometry/visibility is transient. Do not turn it
+                    // into a content failure latch and do not request a redraw.
+                    state.submissionGeneration++;
+                    RemoveOverlayQuiet(label); state.maskMode=@"时间替换未就绪，等待生命周期输入"; return;
                 }
                 [label setNeedsDisplay];
             }
@@ -1083,7 +1093,7 @@ static void InstallHooks(void) {
         if (!cls) { [status addObject:[name stringByAppendingString:@": 未加载"]]; continue; }
         [status addObject:[name stringByAppendingString:@": 已加载"]];
         unsigned count=0; Method *methods=class_copyMethodList(cls,&count);
-        NSArray *selectors=[cls isSubclassOfClass:UILabel.class] ? @[@"layoutSubviews",@"didMoveToWindow",@"drawTextInRect:"] : @[@"layoutSubviews",@"didMoveToWindow"];
+        NSArray *selectors=[cls isSubclassOfClass:UILabel.class] ? @[@"layoutSubviews",@"didMoveToWindow",@"drawTextInRect:",@"setText:",@"setAttributedText:"] : @[@"layoutSubviews",@"didMoveToWindow"];
         for (NSString *method in selectors) {
             SEL sel=NSSelectorFromString(method); BOOL own=NO;
             for (unsigned i=0;i<count;i++) if (method_getName(methods[i])==sel) own=YES;
@@ -1138,8 +1148,9 @@ static void InvalidateClockResource(UILabel *label) {
     LSGCState *s=objc_getAssociatedObject(label,&StateKey);
     if (!s) return;
     RemoveOverlay(label);
-    s.cachedMask=nil; s.cachedMaskSignature=nil; s.failedSignature=nil;
+    s.cachedMask=nil; s.cachedMaskSignature=nil; s.failedResourceKey=nil;
     s.signature=nil; s.maskHasInk=NO;
+    s.resourceGeneration++; s.submissionGeneration++;
 }
 static void LabelText(id obj,SEL sel,id value) {
     UILabel *label=(UILabel *)obj;
@@ -1189,7 +1200,7 @@ static void InstallClockHooks(void) {
         Class cls=NSClassFromString(name);
         if (!cls) continue;
         BOOL labelClass=[cls isSubclassOfClass:UILabel.class];
-        NSArray *selectors=labelClass ? @[@"layoutSubviews",@"didMoveToWindow",@"drawTextInRect:"] : @[@"layoutSubviews",@"didMoveToWindow"];
+        NSArray *selectors=labelClass ? @[@"layoutSubviews",@"didMoveToWindow",@"drawTextInRect:",@"setText:",@"setAttributedText:"] : @[@"layoutSubviews",@"didMoveToWindow"];
         for (NSString *method in selectors) {
             NSString *key=[name stringByAppendingFormat:@"/%@",method];
             SEL sel=NSSelectorFromString(method);
@@ -1209,7 +1220,18 @@ static void InstallClockHooks(void) {
                 Walk((UIView *)obj,0);
             };
             IMP hook;
-            if ([method isEqualToString:@"drawTextInRect:"]) {
+            if ([method isEqualToString:@"setText:"] || [method isEqualToString:@"setAttributedText:"]) {
+                hook=imp_implementationWithBlock(^(id obj,id value) {
+                    UILabel *label=(UILabel *)obj;
+                    NSString *beforeText=[label.text copy];
+                    NSAttributedString *beforeAttributed=[label.attributedText copy];
+                    ((void(*)(id,SEL,id))original)(obj,sel,value);
+                    BOOL changed=!((beforeText==label.text || [beforeText isEqualToString:label.text]) &&
+                                    (beforeAttributed==label.attributedText || [beforeAttributed isEqualToString:label.attributedText]));
+                    if (changed) InvalidateClockResource(label);
+                    Schedule(label);
+                });
+            } else if ([method isEqualToString:@"drawTextInRect:"]) {
                 hook=imp_implementationWithBlock(^(id obj,CGRect rect) {
                     DiagInc(&DiagDraw);
                     BOOL main=!Rendering && DiagDrawDepth==0 && IsStandaloneTimeLabel((UILabel *)obj);

@@ -10,7 +10,7 @@ for k in ['edgeCore','edgeWidth','edgeHighlight','edgeEnabled']:
     assert f'Config[@"{k}"]' not in s
 assert '} else ClearEdges(s);' in style
 apply=s[s.index('static void Apply(UILabel *label) {'):s.index('static void InstallHooks(void) {')]
-assert apply.index('ClearEdges(state); // Also purge legacy edges') < apply.index('if (![state.signature isEqualToString:signature])')
+assert apply.index('ClearEdges(state); // Also purge legacy edges') < apply.index('BOOL needsMask=')
 assert '[s.edgeHost removeFromSuperlayer]' in s
 snapshot=s[s.index('static UIImage *SnapshotText('):s.index('// Preserve original highlights')]
 assert '[text removeAttribute:NSStrokeWidthAttributeName range:all]' in snapshot

@@ -3,7 +3,7 @@ name: Build LockScreenGradientClock
 on:
   workflow_dispatch:
   push:
-    branches: [ main, master ]
+    branches: [ main, master, 'fix/wake-flash-safe-2.0.8' ]
 
 jobs:
   build:
@@ -48,6 +48,13 @@ jobs:
           test -d "$THEOS/sdks/iPhoneOS16.5.sdk"
           echo "THEOS=$THEOS"
           xcrun --version
+
+      - name: Run wake safety regression
+        run: |
+          set -e
+          c++ -std=c++17 -Wall -Wextra -Werror tests/wake_strategy_test.cpp -o /tmp/wake_strategy_test
+          /tmp/wake_strategy_test
+          python3 scripts/verify_wake_strategy.py
 
       - name: Run math tests
         run: |
