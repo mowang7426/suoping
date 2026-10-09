@@ -33,7 +33,7 @@ image=body('static void AddedImage','__attribute__((constructor))')
 assert 'DiscoverAndApply();' in image and 'ImageRefreshPending' in image
 start=s[s.index('__attribute__((constructor))'):]
 assert start.index('StartupComplete=YES') < start.index('InstallHooks();') < start.index('_dyld_register_func_for_add_image')
-ready=body('static BOOL ClockReplacementReady(UILabel *label) {','static void Apply(UILabel *label) {')
+ready=body('static BOOL ClockReplacementReadyForCommit(UILabel *label) {','static void Apply(UILabel *label) {')
 assert '!Hooked || !LabelHooked' in ready
 diag=body('static void WriteDiagnostics(void) {','static BOOL ColorRGB')
 assert 'BOOL time=IsStandaloneTimeLabel(label)' in diag
