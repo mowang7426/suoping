@@ -29,7 +29,7 @@ assert 'clock ? state.clockCanvasSize : label.bounds.size' in apply
 assert 'available/visible.size.width' in apply
 assert 'ClearEdges(state); // Also purge legacy edges' in apply
 assert 'BuildEdgeImages' not in s and 'InstallEdgeContents' not in s
-ready=body('static BOOL ClockReplacementReady(UILabel *label) {','static void Apply(UILabel *label) {')
+ready=body('static BOOL ClockReplacementReadyForCommit(UILabel *label) {','static void Apply(UILabel *label) {')
 assert 'outlineReady' in ready and 's.clockRim.superlayer==s.dateHost' in ready
 remove=body('static void RemoveOverlay(', '// Render at the final clock magnification')
 assert '[s.clockRim removeFromSuperlayer]' in remove and 's.clockCommitted=NO' in remove
