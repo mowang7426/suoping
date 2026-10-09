@@ -891,6 +891,7 @@ static BOOL ClockReplacementReady(UILabel *label) {
     return s && s.clockCommitted && ClockReplacementReadyForCommit(label);
 }
 static void Apply(UILabel *label) {
+    BOOL visualChanged=NO;
     DiagInc(&DiagApply); DiagApplyReturn=@"entered";
     if (!NSThread.isMainThread) { DiagApplyReturn=@"not-main-thread"; return; }
     [Labels addObject:label];
@@ -1025,7 +1026,6 @@ static void Apply(UILabel *label) {
                         state.dateHost.transform=CATransform3DScale(state.dateHost.transform,fit,fit,1);
                     }
                 }
-                BOOL visualChanged=NO;
                 UpdateParallax();
                 NSUInteger oldStyleToken=state.styleToken, oldMotionBits=state.motionBits, oldRevision=state.revision;
                 CGRect oldBounds=state.dateHost.bounds; CGPoint oldPosition=state.dateHost.position; CATransform3D oldTransform=state.dateHost.transform;
