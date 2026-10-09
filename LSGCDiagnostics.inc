@@ -39,9 +39,9 @@ static NSDictionary *DiagGate(UILabel *label) {
         @"visible":@(ClockHostVisible(label,s)),@"onScreen":@(onScreen),@"signatureCurrent":@([s.signature isEqualToString:DateSignature(label)]),@"opacity":@(opacity)} mutableCopy];
     NSMutableArray *failed=[NSMutableArray array];
     gate[@"localGeometry"]=@(localGeometry);
-    gate[@"onScreenIsDiagnosticOnly"]=@YES;
+    gate[@"onScreenIsDiagnosticOnly"]=@NO;
     gate[@"replacementReady"]=@(ClockReplacementReady(label));
-    for (NSString *key in @[@"identity",@"hookReady",@"committed",@"siblingSelection",@"enabled",@"fontReady",@"maskHasInk",@"attached",@"visible",@"localGeometry",@"signatureCurrent"])
+    for (NSString *key in @[@"identity",@"hookReady",@"committed",@"siblingSelection",@"enabled",@"fontReady",@"maskHasInk",@"attached",@"visible",@"onScreen",@"localGeometry",@"signatureCurrent"])
         if (![gate[key] boolValue]) [failed addObject:key];
     if (!(opacity>=0.01)) [failed addObject:@"opacity"];
     gate[@"outlineReady"]=@(outlineReady);
