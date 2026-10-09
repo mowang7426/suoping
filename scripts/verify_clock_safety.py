@@ -3,7 +3,7 @@
 from pathlib import Path
 s=(Path(__file__).resolve().parents[1]/'Tweak.xm').read_text()
 apply=s[s.index('static void Apply(UILabel *label) {'):s.index('static void InstallHooks(void) {')]
-ready=s[s.index('static BOOL ClockReplacementReady(UILabel *label) {'):s.index('static void Apply(UILabel *label) {')]
+ready=s[s.index('static BOOL ClockReplacementReadyForCommit(UILabel *label) {'):s.index('static void Apply(UILabel *label) {')]
 assert 'if (!clock && !state.hidOriginalLabel)' in apply, 'clock must never hide UIView alpha'
 assert 'label.hidden=YES' not in apply
 assert 'UIView *dateParent=clock ? ClockOverlayParent(label,&hostReason) : DateOverlayParent(label)' in apply
@@ -11,7 +11,8 @@ assert 'CGPoint center=[label convertPoint:CGPointMake(CGRectGetMidX(label.bound
 assert 'CATransform3DScale(label.layer.transform' not in apply, 'native transform must not be applied twice'
 assert 'if (!image || !HasAlpha(image))' in apply
 assert apply.index('ApplyStyle(label,state,state.dateHost') < apply.index('state.clockCommitted=YES')
-assert 'if (!ClockReplacementReady(label))' in apply
+assert ('if (!ClockReplacementReady(label))' in apply or
+        'if (!ClockReplacementReadyForCommit(label))' in apply), 'readiness must be checked before commit'
 for contract in ['ImportedFont', 's.maskHasInk', 's.dateHost.superlayer==s.clockHost.layer',
                  's.gradient.superlayer==s.dateHost', 's.gradient.mask==s.mask',
                  'CGRectIntersectsRect', 'v.clipsToBounds', 'ClockHostVisible(label,s)',
