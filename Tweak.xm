@@ -1227,7 +1227,7 @@ static void InstallClockHooks(void) {
                     NSAttributedString *beforeAttributed=[label.attributedText copy];
                     ((void(*)(id,SEL,id))original)(obj,sel,value);
                     BOOL changed=!((beforeText==label.text || [beforeText isEqualToString:label.text]) &&
-                                    (beforeAttributed==label.attributedText || [beforeAttributed isEqualToString:label.attributedText]));
+                                    (beforeAttributed==label.attributedText || [beforeAttributed isEqualToAttributedString:label.attributedText]));
                     if (changed) InvalidateClockResource(label);
                     Schedule(label);
                 });
