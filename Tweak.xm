@@ -809,6 +809,7 @@ static void RemoveOverlay(UILabel *label) {
     }
     if (s.didUnclipClock) { label.clipsToBounds=s.originalClipsToBounds; s.didUnclipClock=NO; }
     if (s.clockCommitted) { s.clockCommitted=NO; [label setNeedsDisplay]; }
+    if (clock) s->wakePolicy.committed=NO;
     if (!clock) s.maskHasInk=NO;
     s.ticket++; s.busy=NO; s.dirty=NO;
     [s.gradient removeFromSuperlayer]; [s.gradient removeAllAnimations];
