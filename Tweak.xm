@@ -40,8 +40,11 @@ static void Walk(UIView *view,NSUInteger depth);
 static NSString *HookReport;
 static char StateKey, PendingKey;
 static BOOL Rendering;
+static BOOL NativeClockSuppressionState;
 static NSUInteger Revision;
 static void Apply(UILabel *label);
+static BOOL NativeClockSuppressionEnabled(void);
+static void RefreshNativeClockSuppression(void);
 static BOOL ClockReplacementReady(UILabel *label);
 static BOOL ClockReplacementReadyForCommit(UILabel *label);
 static void InstallHooks(void);
@@ -134,7 +137,7 @@ static CGFloat Clamp(CGFloat x, CGFloat lo, CGFloat hi) {
 }
 static void LoadConfig(void) {
     CFPreferencesAppSynchronize((__bridge CFStringRef)Domain);
-    NSMutableDictionary *values=[@{@"enabled":@YES,@"color1":@"#39D6ED",@"color2":@"#4D7CFF",@"color3":@"#AD4DF5",@"color4":@"#F950B0",@"color5":@"#FFBD61",@"direction":@0,@"opacity":@0.65,@"animate":@NO,@"strictScope":@YES,@"maskMode":@0,@"glassBlend":@YES,@"glassTint":@0.32,@"edgeEnabled":@NO,@"edgePalette":@0,@"edgeCore":@0.22,@"edgeStrength":@0.65,@"edgeWidth":@1.5,@"edgeHighlight":@0.35,@"edgeReveal":@NO,@"customAngleEnabled":@NO,@"gradientAngle":@0,@"customStopsEnabled":@NO,@"stop1":@0,@"stop2":@0.25,@"stop3":@0.5,@"stop4":@0.75,@"stop5":@1,@"reverseColors":@NO,@"independentEdges":@NO,@"edgeColor1":@"#D0FAFF",@"edgeColor2":@"#B39CFF",@"edgeColor3":@"#F7A9DD",@"timeShift":@NO,@"parallaxAngle":@NO,@"scheduleEnabled":@NO} mutableCopy];
+    NSMutableDictionary *values=[@{@"enabled":@YES,@"color1":@"#39D6ED",@"color2":@"#4D7CFF",@"color3":@"#AD4DF5",@"color4":@"#F950B0",@"color5":@"#FFBD61",@"direction":@0,@"opacity":@0.65,@"animate":@NO,@"strictScope":@YES,@"maskMode":@0,@"glassBlend":@YES,@"glassTint":@0.32,@"edgeEnabled":@NO,@"edgePalette":@0,@"edgeCore":@0.22,@"edgeStrength":@0.65,@"edgeWidth":@1.5,@"edgeHighlight":@0.35,@"edgeReveal":@NO,@"customAngleEnabled":@NO,@"gradientAngle":@0,@"customStopsEnabled":@NO,@"stop1":@0,@"stop2":@0.25,@"stop3":@0.5,@"stop4":@0.75,@"stop5":@1,@"reverseColors":@NO,@"independentEdges":@NO,@"edgeColor1":@"#D0FAFF",@"edgeColor2":@"#B39CFF",@"edgeColor3":@"#F7A9DD",@"timeShift":@NO,@"parallaxAngle":@NO,@"scheduleEnabled":@NO,@"hideNativeClock":@NO} mutableCopy];
     // Standalone native lock-screen clock mode: no Liquidify object is required.
     values[@"dateGradient"]=@YES;
     values[@"clockScale"]=@2.35;
@@ -844,6 +847,27 @@ static CGFloat TextMaskScale(UILabel *label) {
     CGFloat budget=sqrt((4096.0*2048.0)/MAX(1,size.width*size.height));
     return MAX(1,MIN(desired,MIN(budget,4096.0/MAX(size.width,size.height))));
 }
+// Suppress only the exact standalone main-time UILabel draw. The custom
+// gradient is a sibling host, so this never hides its container or date/lunar views.
+// The main enabled switch is a safety link: disabling the plugin always restores
+// the native draw, even when hideNativeClock remains stored as ON.
+static BOOL NativeClockSuppressionEnabled(void) {
+    return [Config[@"enabled"] boolValue] && [Config[@"hideNativeClock"] boolValue];
+}
+static void RefreshNativeClockSuppression(void) {
+    if (!NSThread.isMainThread) return;
+    BOOL next=NativeClockSuppressionEnabled();
+    if (next==NativeClockSuppressionState) return;
+    NativeClockSuppressionState=next;
+    // Clear the old UILabel backing store before requesting exactly one redraw.
+    // No alpha/hidden mutation and no shared-host mutation are used.
+    for (UILabel *label in Labels.allObjects) {
+        if (!IsStandaloneTimeLabel(label)) continue;
+        label.layer.contents=nil;
+        [label.layer setNeedsDisplay];
+        [label setNeedsDisplay];
+    }
+}
 static NSString *DateSignature(UILabel *label) {
     // Date/lunar signatures never contain user clock settings.
     NSString *base=[NSString stringWithFormat:@"%@|%@|%@|%ld|%ld|%ld|%d|%g|%ld",
@@ -1186,6 +1210,10 @@ static void LabelDraw(id obj,SEL sel,CGRect rect) {
     if (main) DiagInc(&DiagMainDraw);
     ++DiagDrawDepth;
     @try {
+        if (!Rendering && NativeClockSuppressionEnabled() && IsStandaloneTimeLabel((UILabel *)obj)) {
+            if (main) DiagInc(&DiagSuppress);
+            return;
+        }
         if (!Rendering && ClockReplacementReady((UILabel *)obj)) { if (main) DiagInc(&DiagSuppress); return; }
         if (main) DiagInc(&DiagNative);
         OrigLabelDraw(obj,sel,rect);
@@ -1323,6 +1351,10 @@ static void InstallClockHooks(void) {
                     if (main) DiagInc(&DiagMainDraw);
                     ++DiagDrawDepth;
                     @try {
+                        if (!Rendering && NativeClockSuppressionEnabled() && IsStandaloneTimeLabel((UILabel *)obj)) {
+                            if (main) DiagInc(&DiagSuppress);
+                            return;
+                        }
                         if (!Rendering && ClockReplacementReady((UILabel *)obj)) { if (main) DiagInc(&DiagSuppress); return; }
                         if (main) DiagInc(&DiagNative);
                         ((void(*)(id,SEL,CGRect))original)(obj,sel,rect);
@@ -1589,7 +1621,7 @@ static void Notification(CFNotificationCenterRef center,void *observer,CFStringR
     dispatch_async(dispatch_get_main_queue(), ^{
         if (diagnostic) { WriteDiagnostics(); return; }
         if (sample) { SampleWallpaper(); return; }
-        LoadConfig(); MaybeApplySchedule(YES); DiscoverAndApply();
+        LoadConfig(); RefreshNativeClockSuppression(); MaybeApplySchedule(YES); DiscoverAndApply();
     });
 }
 static void AddedImage(const struct mach_header *header,intptr_t slide) {
@@ -1606,7 +1638,7 @@ __attribute__((constructor)) static void Start(void) {
     @autoreleasepool {
         if (![NSBundle.mainBundle.bundleIdentifier isEqualToString:@"com.apple.springboard"]) return;
         dispatch_async(dispatch_get_main_queue(), ^{
-            Labels=[NSHashTable weakObjectsHashTable]; DateViews=[NSHashTable weakObjectsHashTable]; LoadConfig();
+            Labels=[NSHashTable weakObjectsHashTable]; DateViews=[NSHashTable weakObjectsHashTable]; LoadConfig(); NativeClockSuppressionState=NativeClockSuppressionEnabled();
             StartupComplete=YES;
             InstallHooks();
             NSLog(@"[LSGC] constructor initialized in SpringBoard; %@",HookReport);

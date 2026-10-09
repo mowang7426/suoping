@@ -30,6 +30,20 @@
 			<key>cell</key>
 			<string>PSSwitchCell</string>
 			<key>label</key>
+			<string>隐藏原生锁屏时间</string>
+			<key>key</key>
+			<string>hideNativeClock</string>
+			<key>default</key>
+			<false/>
+			<key>defaults</key>
+			<string>com.minis.lockscreengradientclock</string>
+			<key>footerText</key>
+			<string>打开后仅抑制已严格识别的原生主时间字形；自定义渲染失败时可能无时间。关闭或关闭主开关后恢复系统时间。日期与农历不受影响。</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>label</key>
 			<string>日期与农历渐变（可选）</string>
 			<key>key</key>
 			<string>dateGradient</string>
