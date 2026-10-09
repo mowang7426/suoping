@@ -23,9 +23,8 @@ assert 'IsStandaloneTimeLabel(label) ? Clamp([Config[@"clockOffsetY"]' in source
 assert 'CGFloat sy=frame.size.height/label.bounds.size.height*userScale*heightScale' in source
 assert 'clockHeight' not in source[source.index('static NSString *DateSignature'):source.index('static void Apply')]
 assert 'LSGCLabeledSliderCell.class' in (root/'Preferences/LSGCRootListController.m').read_text()
-version=(root/'control').read_text().split('Version: ',1)[1].splitlines()[0]
-assert version == '2.0.11'
-assert f'#define LSGCVersionString @"{version}-wake-atomic-2.0.8-base"' in (root/'LSGCVersion.h').read_text()
+assert (root/'control').read_text().split('Version: ',1)[1].splitlines()[0] == '2.0.8'
+assert '#define LSGCVersionString @"2.0.8-date-gradient-only"' in (root/'LSGCVersion.h').read_text()
 # Event-driven clock geometry and process-local imported fonts.
 font=(root/'LSGCFont.h').read_text()
 prefs=(root/'Preferences/LSGCRootListController.m').read_text()

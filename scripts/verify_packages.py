@@ -23,7 +23,7 @@ def verify(path):
         assert plistlib.loads(read(injection+'.plist'))['Filter']['Bundles']==['com.apple.springboard']
         dylib=read(injection+'.dylib')
         assert len(dylib)>4096
-        for marker in [b'_UIAnimatingLabel', b'CSProminentTimeView', b'SBFLockScreenDateView', b'[LSGC] constructor initialized', b'alpha-zero-wrapper-sibling', b'2.0.11-wake-atomic-2.0.8-base', b'LSGC.ClockOutline', b'clockEdgeWidth', b'clockWeight', b'sibling-wrapper-alpha-not-zero', b'unsupported-host-layer-mask:']:
+        for marker in [b'_UIAnimatingLabel', b'CSProminentTimeView', b'SBFLockScreenDateView', b'[LSGC] constructor initialized', b'alpha-zero-wrapper-sibling', b'2.0.8-date-gradient-only', b'LSGC.ClockOutline', b'clockEdgeWidth', b'clockWeight', b'sibling-wrapper-alpha-not-zero', b'unsupported-host-layer-mask:']:
             assert marker in dylib, f'missing standalone entry/clock marker: {marker!r}'
         entry = plistlib.loads(read(ENTRY))['entry']
         assert entry['bundle'] == 'LockScreenGradientClockPrefs'
@@ -44,7 +44,7 @@ def verify(path):
         assert '彩边' not in str(root), 'obsolete date edge explanation shipped'
         for key in ['color1','color2','color3','color4','color5','clockOpacity','clockWeight','clockEdgeColor','clockEdgeEnabled','clockEdgeWidth','clockEdgeStrength']:
             assert key in settings, f'missing shared palette/independent ink setting: {key}'
-        assert subprocess.check_output(['dpkg-deb','-f',str(path),'Version'],text=True).strip()=='2.0.11'
+        assert subprocess.check_output(['dpkg-deb','-f',str(path),'Version'],text=True).strip()=='2.0.8'
         assert len(read(BUNDLE + info['CFBundleExecutable'])) > 0
     print(f'PASS {path}: preference entry, controller binary and resources present')
 

@@ -27,11 +27,8 @@ assert 'if (!OrigLabelDraw)' in label
 hooks=body('static void InstallClockHooks(void) {','static void Walk(UIView *view,NSUInteger depth) {')
 assert 'Walk((UIView *)obj,0)' in hooks
 assert '@"SBFLockScreenDateView"' in hooks
-assert 'dispatch_after' not in s, 'discovery must not be a delayed takeover'
-sync=body('static void SyncClock(', 'static void Schedule(')
-assert sync.index('[CATransaction begin]') < sync.index('Apply(label)') < sync.index('[CATransaction commit]')
-schedule=body('static void Schedule(', 'static CALayer *MaskOwner(')
-assert schedule.index('SyncClock(label)') < schedule.index('dispatch_async')
+retry=body('static void RetryDateDiscover(void) {','static void WriteDiagnostics')
+assert 'DiscoverAndApply();' in retry and 'return;' not in retry
 image=body('static void AddedImage','__attribute__((constructor))')
 assert 'DiscoverAndApply();' in image and 'ImageRefreshPending' in image
 start=s[s.index('__attribute__((constructor))'):]

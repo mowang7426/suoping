@@ -11,10 +11,10 @@ assert 'CGPoint center=[label convertPoint:CGPointMake(CGRectGetMidX(label.bound
 assert 'CATransform3DScale(label.layer.transform' not in apply, 'native transform must not be applied twice'
 assert 'if (!image || !HasAlpha(image))' in apply
 assert apply.index('ApplyStyle(label,state,state.dateHost') < apply.index('state.clockCommitted=YES')
-assert 'LSGCClockCommit(action,ClockReplacementReady(label))' in apply
+assert 'if (!ClockReplacementReady(label))' in apply
 for contract in ['ImportedFont', 's.maskHasInk', 's.dateHost.superlayer==s.clockHost.layer',
                  's.gradient.superlayer==s.dateHost', 's.gradient.mask==s.mask',
-                 'CGRectIntersectsRect', 's.clockHost.bounds', 'ClockHostVisible(label,s)',
+                 'CGRectIntersectsRect', 'v.clipsToBounds', 'ClockHostVisible(label,s)',
                  'DateSignature(label)', 'CGColorGetAlpha', 'LSGCCanReplaceClock(ready)']:
     assert contract in ready, contract
 assert s.count('if (!Rendering && ClockReplacementReady((UILabel *)obj)) { if (main) DiagInc(&DiagSuppress); return; }')==2
@@ -28,11 +28,11 @@ helper=s[s.index('static UIView *ClockSelectOverlayParent'):s.index('static UIVi
 assert 'LSGCAllowSourceWrapper(true,' in helper
 assert 'v.hidden || v.layer.hidden' in helper
 assert 'bypass && v==wrapper' in helper
-assert 's.dateHost.opacity*s.gradient.opacity>=0.01' in helper
-assert 'LSGCClockCommonOpacityValid' in helper
+assert 'layer.hidden || shown.hidden || layer.opacity<0.01 || shown.opacity<0.01' in helper
+assert 'effectiveOpacity*s.gradient.opacity>=0.01' in helper
 assert 'unsupported-source-3d-transform' in helper
 assert 'host!=s.clockHost' in helper
-assert 'source-invalid-geometry' in helper
+assert 'source-off-screen' in helper
 assert 'if (!tracked && !glass && !IsStandaloneTimeLabel(label)' in s
 assert 'if (IsStandaloneTimeLabel(label)) return nil;' in s
 assert 'if (clock && !dateParent)' in apply

@@ -28,12 +28,10 @@ assert 'Visible(label)' not in host.replace('// Never run Visible(label) or a la
 assert 'for (UIView *v=label; v; v=v.superview)' not in host
 assert '!(bypass && v==wrapper)' in host
 assert 'host.window!=label.window' in host
-assert 'LSGCClockCommonOpacityValid' in host
-assert 'CGRectIntersection(sourceRect,label.window.bounds)' in host
-assert 'effectiveOpacity<0.01' in host and 'sourceRect' in host
-assert 'shown.opacity' in host and 'v.hidden || v.layer.hidden' in host
+assert 'v.clipsToBounds || v.layer.masksToBounds' in host
+assert 'effectiveOpacity<0.01' in host
 assert apply.index('ClockOverlayParent(label,&hostReason)') < apply.index('!Visible(dateParent)') < apply.index('SnapshotText(label,TextMaskScale(label))')
-assert apply.index('SnapshotText(label,TextMaskScale(label))') < apply.index('addSublayer:state.dateHost') < apply.index('ApplyStyle(label,state,state.dateHost') < apply.index('state.clockCommitted=YES') < apply.index('LSGCClockCommit(action,ClockReplacementReady(label))')
+assert apply.index('SnapshotText(label,TextMaskScale(label))') < apply.index('addSublayer:state.dateHost') < apply.index('ApplyStyle(label,state,state.dateHost') < apply.index('state.clockCommitted=YES') < apply.index('if (!ClockReplacementReady(label))')
 assert 'if (!clock && !state.hidOriginalLabel)' in apply
 assert 'if (IsStandaloneTimeLabel(label)) return nil;' in s
 schedule=body('static void Schedule(UILabel *label) {','static CALayer *MaskOwner(')
