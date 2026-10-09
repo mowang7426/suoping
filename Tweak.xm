@@ -1025,11 +1025,12 @@ static void Apply(UILabel *label) {
                         state.dateHost.transform=CATransform3DScale(state.dateHost.transform,fit,fit,1);
                     }
                 }
+                BOOL visualChanged=NO;
                 UpdateParallax();
                 NSUInteger oldStyleToken=state.styleToken, oldMotionBits=state.motionBits, oldRevision=state.revision;
                 CGRect oldBounds=state.dateHost.bounds; CGPoint oldPosition=state.dateHost.position; CATransform3D oldTransform=state.dateHost.transform;
                 ApplyStyle(label,state,state.dateHost,MotionBits(dateParent)|8);
-                BOOL visualChanged=needsMask || oldStyleToken!=state.styleToken || oldMotionBits!=state.motionBits || oldRevision!=state.revision ||
+                visualChanged=needsMask || oldStyleToken!=state.styleToken || oldMotionBits!=state.motionBits || oldRevision!=state.revision ||
                     !CGRectEqualToRect(oldBounds,state.dateHost.bounds) || !CGPointEqualToPoint(oldPosition,state.dateHost.position) || !CATransform3DEqualToTransform(oldTransform,state.dateHost.transform);
             } @finally { [CATransaction commit]; }
             if (clock) {
@@ -1309,7 +1310,7 @@ static void InstallClockHooks(void) {
                     @try { ((void(*)(id,SEL,id))original)(obj,sel,value); }
                     @finally {
                         BOOL changed=!((beforeText==label.text || [beforeText isEqualToString:label.text]) &&
-                                        (beforeAttributed==label.attributedText || [beforeAttributed isEqualToString:label.attributedText]));
+                                        (beforeAttributed==label.attributedText || [beforeAttributed isEqual:label.attributedText]));
                         if (guarded) EndSetter(label);
                         if (outer && changed) InvalidateClockResource(label);
                         if (outer) Schedule(label);

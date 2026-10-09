@@ -8,7 +8,8 @@
 inline bool LSGCShouldQueueWake(bool pending) { return !pending; }
 
 struct LSGCSetterGuard {
-  unsigned depth=0;
+  unsigned depth;
+  LSGCSetterGuard() : depth(0) {}
   bool enter() { bool outer=depth==0; ++depth; return outer; }
   void leave() { if (depth) --depth; }
 };
@@ -23,11 +24,12 @@ inline bool LSGCResourceBindingConsistent(const std::string& key, std::size_t ge
          !key.empty() && key==cachedKey && generation==cachedGeneration;
 }
 struct LSGCWakePolicy {
-  std::size_t resourceGeneration=0, submissionGeneration=0;
+  std::size_t resourceGeneration, submissionGeneration;
   std::string failedKey;
-  bool committed=false;
+  bool committed;
+  LSGCWakePolicy() : resourceGeneration(0), submissionGeneration(0), committed(false) {}
   LSGCWakeSnapshot begin(const std::string& key) const {
-    return {resourceGeneration, submissionGeneration, key};
+    LSGCWakeSnapshot x = {resourceGeneration, submissionGeneration, key}; return x;
   }
   bool failedEarly(const LSGCWakeSnapshot& x) const {
     return !x.key.empty() && failedKey==x.key && x.resourceGeneration==resourceGeneration;
