@@ -14,6 +14,7 @@
 #import "LSGCClockSafety.h"
 #import "LSGCClockScope.h"
 #import "LSGCClockRender.h"
+#import "LSGCWakeStrategy.h"
 
 // An optional companion: never patch, replace or distribute Liquidify binaries.
 extern "C" void MSHookMessageEx(Class, SEL, IMP, IMP *);
@@ -42,6 +43,7 @@ static BOOL Rendering;
 static NSUInteger Revision;
 static void Apply(UILabel *label);
 static BOOL ClockReplacementReady(UILabel *label);
+static BOOL ClockReplacementReadyForCommit(UILabel *label);
 static void InstallHooks(void);
 static void InstallLabelHooks(void);
 static void Discover(void);
@@ -73,7 +75,10 @@ static void DiagCaptureMask(UIImage *image, CGSize requested, CGFloat scale);
 static NSString *DiagReport(void);
 
 
-@interface LSGCState : NSObject
+@interface LSGCState : NSObject {
+@public
+    LSGCWakePolicy wakePolicy;
+}
 @property(nonatomic,strong) CAGradientLayer *gradient;
 @property(nonatomic,strong) CALayer *dateHost;
 @property(nonatomic,strong) CAShapeLayer *clockRim;
@@ -102,6 +107,7 @@ static NSString *DiagReport(void);
 @property(nonatomic) BOOL originalHidden;
 @property(nonatomic,strong) UIImage *cachedMask;
 @property(nonatomic,copy) NSString *cachedMaskSignature;
+@property(nonatomic) NSUInteger cachedResourceGeneration;
 @property(nonatomic,copy) NSString *failedResourceKey;
 @property(nonatomic) NSUInteger resourceGeneration;
 @property(nonatomic) NSUInteger submissionGeneration;
@@ -343,7 +349,8 @@ static void Schedule(UILabel *label) {
     BOOL tracked=objc_getAssociatedObject(label,&StateKey)!=nil;
     BOOL glass=GlassClass && [label isKindOfClass:GlassClass];
     if (!tracked && !glass && !IsStandaloneTimeLabel(label) && !DateOverlayParent(label)) { DiagScheduleReturn=@"not-tracked/glass/date-or-main-clock"; return; }
-    if (objc_getAssociatedObject(label,&PendingKey)) { DiagScheduleReturn=@"already-pending"; return; }
+    BOOL pending=objc_getAssociatedObject(label,&PendingKey)!=nil;
+    if (!LSGCShouldQueueWake(pending)) { DiagScheduleReturn=@"already-pending"; return; }
     DiagScheduleReturn=@"queued";
     objc_setAssociatedObject(label,&PendingKey,@YES,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     __weak UILabel *weak=label;
@@ -815,10 +822,16 @@ static void RemoveOverlay(UILabel *label) {
 // Render at the final clock magnification, not native label resolution.
 // Cap each dimension and total pixels; no bitmap work for position/transform updates.
 static void RemoveOverlayQuiet(UILabel *label) {
-    // Host/readiness failure is transient input; never ask native draw to retry.
+    // A quiet removal is an edge, not a fake committed state: preserve the
+    // committed->native transition and request one recovery draw only then.
     LSGCState *s=objc_getAssociatedObject(label,&StateKey);
-    if (s) s.clockCommitted=NO;
+    BOOL restore=s && (s.clockCommitted || s->wakePolicy.committed);
+    if (s) {
+        s.clockCommitted=NO;
+        s->wakePolicy.removeQuiet();
+    }
     RemoveOverlay(label);
+    if (restore) [label setNeedsDisplay];
 }
 static CGFloat TextMaskScale(UILabel *label) {
     if (!IsStandaloneTimeLabel(label)) return MaskScale(label.bounds.size);
@@ -844,9 +857,9 @@ static NSString *DateSignature(UILabel *label) {
 }
 // Suppress only the glyph draw, never UIView alpha/hidden. The overlay lives
 // in a verified visible host; native ancestor transforms are inherited once.
-static BOOL ClockReplacementReady(UILabel *label) {
+static BOOL ClockReplacementReadyForCommit(UILabel *label) {
     LSGCState *s=objc_getAssociatedObject(label,&StateKey);
-    if (!Hooked || !LabelHooked || !s || !s.clockCommitted || !IsStandaloneTimeLabel(label) ||
+    if (!Hooked || !LabelHooked || !s || !IsStandaloneTimeLabel(label) ||
         ![s.hostSelection isEqualToString:@"alpha-zero-wrapper-sibling"]) return NO;
     NSString *name=[Config[@"fontName"] isKindOfClass:NSString.class] ? Config[@"fontName"] : @"";
     BOOL fontReady=!name.length || (ImportedFont!=nil) ||
@@ -872,12 +885,22 @@ static BOOL ClockReplacementReady(UILabel *label) {
         s.gradient.opacity*s.dateHost.opacity*colorAlpha, (bool)(Hooked && LabelHooked) };
     return LSGCCanReplaceClock(ready);
 }
+static BOOL ClockReplacementReady(UILabel *label) {
+    LSGCState *s=objc_getAssociatedObject(label,&StateKey);
+    return s && s.clockCommitted && ClockReplacementReadyForCommit(label);
+}
 static void Apply(UILabel *label) {
     DiagInc(&DiagApply); DiagApplyReturn=@"entered";
     if (!NSThread.isMainThread) { DiagApplyReturn=@"not-main-thread"; return; }
     [Labels addObject:label];
     BOOL isGlassLabel=GlassClass && [label isKindOfClass:GlassClass];
     BOOL clock=IsStandaloneTimeLabel(label);
+    LSGCState *clockState=objc_getAssociatedObject(label,&StateKey);
+    if (clock && !clockState) {
+        clockState=[LSGCState new]; clockState.gradient=[CAGradientLayer layer]; clockState.mask=[CALayer layer];
+        clockState.gradient.mask=clockState.mask;
+        objc_setAssociatedObject(label,&StateKey,clockState,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
     if (clock) { DiagInc(&DiagMainApply); DiagMainApplyReturn=@"entered"; }
     NSString *hostReason=nil;
     UIView *dateParent=clock ? ClockOverlayParent(label,&hostReason) : DateOverlayParent(label);
@@ -906,6 +929,15 @@ static void Apply(UILabel *label) {
         if (clock) { state.clockHost=dateParent; state.hostSelection=hostReason; }
         if (!state.dateHost) { state.dateHost=[CALayer layer]; state.dateHost.name=@"LSGC.DateOverlay"; }
         NSString *signature=DateSignature(label);
+        LSGCWakeSnapshot wakeSnapshot;
+        if (clock) {
+            std::string resourceKey([signature UTF8String] ?: "");
+            wakeSnapshot=state->wakePolicy.begin(resourceKey);
+            if (state->wakePolicy.failedEarly(wakeSnapshot)) {
+                DiagApplyReturn=@"resource-failure-latched";
+                RemoveOverlayQuiet(label); state.maskMode=@"资源失败锁存，保留系统文字"; return;
+            }
+        }
         if (clock && [state.failedResourceKey isEqualToString:signature]) {
             // Stable failure latch: no retry loop until a real input signature changes.
             RemoveOverlayQuiet(label); state.maskMode=@"资源失败锁存，保留系统文字"; return;
@@ -914,17 +946,26 @@ static void Apply(UILabel *label) {
             BOOL attachedCached=clock && state.gradient.superlayer==state.dateHost;
             BOOL needsMask=!([state.signature isEqualToString:signature] && (!clock || attachedCached));
             if (needsMask) {
-                UIImage *image=(clock && [state.cachedMaskSignature isEqualToString:signature]) ? state.cachedMask : nil;
+                BOOL completeClockResource=clock && LSGCResourceBindingConsistent(
+                    std::string([signature UTF8String] ?: ""), state->wakePolicy.resourceGeneration,
+                    std::string([state.cachedMaskSignature UTF8String] ?: ""), state.cachedResourceGeneration,
+                    state.clockCanvasSize.width, state.clockCanvasSize.height,
+                    state.clockRim.path!=nil, state.cachedMask!=nil);
+                UIImage *image=(completeClockResource) ? state.cachedMask : nil;
                 if (!image) {
                     if (clock) DiagMask=@{ @"source":@"SnapshotText/main-clock", @"status":@"attempted" };
                     @try { Rendering=YES; image=SnapshotText(label,TextMaskScale(label)); }
                     @finally { Rendering=NO; }
                     if (!image || !HasAlpha(image)) {
                         DiagApplyReturn=@"mask-no-ink"; if (clock) DiagCaptureFailure(label,DiagApplyReturn);
-                        if (clock) state.failedResourceKey=signature;
+                        if (clock) { state.failedResourceKey=signature; state->wakePolicy.failResource(wakeSnapshot); }
                         RemoveOverlayQuiet(label); state.maskMode=@"遮罩无有效像素，保留系统文字"; return;
                     }
-                    if (clock) { state.cachedMask=image; state.cachedMaskSignature=signature; state.failedResourceKey=nil; }
+                    if (clock) { state.cachedMask=image; state.cachedMaskSignature=signature; state.cachedResourceGeneration=state->wakePolicy.resourceGeneration; state.failedResourceKey=nil; }
+                }
+                if (clock && !state->wakePolicy.currentResource(wakeSnapshot,std::string([signature UTF8String] ?: ""))) {
+                    state.cachedMask=nil; state.cachedMaskSignature=nil; state.clockCanvasSize=CGSizeZero; state.clockRim.path=nil;
+                    DiagApplyReturn=@"stale-resource-generation"; RemoveOverlayQuiet(label); return;
                 }
                 state.maskHasInk=YES;
                 InstallMask(state,image,NO,nil,state.dateHost,label);
@@ -984,18 +1025,33 @@ static void Apply(UILabel *label) {
                     }
                 }
                 UpdateParallax();
+                NSUInteger oldStyleToken=state.styleToken, oldMotionBits=state.motionBits, oldRevision=state.revision;
+                CGRect oldBounds=state.dateHost.bounds; CGPoint oldPosition=state.dateHost.position; CATransform3D oldTransform=state.dateHost.transform;
                 ApplyStyle(label,state,state.dateHost,MotionBits(dateParent)|8);
+                BOOL visualChanged=needsMask || oldStyleToken!=state.styleToken || oldMotionBits!=state.motionBits || oldRevision!=state.revision ||
+                    !CGRectEqualToRect(oldBounds,state.dateHost.bounds) || !CGPointEqualToPoint(oldPosition,state.dateHost.position) || !CATransform3DEqualToTransform(oldTransform,state.dateHost.transform);
             } @finally { [CATransaction commit]; }
             if (clock) {
-                state.clockCommitted=YES;
-                if (!ClockReplacementReady(label)) {
+                if (!state->wakePolicy.currentResource(wakeSnapshot,std::string([signature UTF8String] ?: "")) ||
+                    !state->wakePolicy.currentSubmission(wakeSnapshot)) {
+                    DiagApplyReturn=@"stale-submission-generation"; RemoveOverlayQuiet(label); return;
+                }
+                if (!ClockReplacementReadyForCommit(label)) {
                     DiagApplyReturn=@"readiness-rejected"; DiagCaptureFailure(label,DiagApplyReturn);
-                    // Host/window/geometry/visibility is transient. Do not turn it
-                    // into a content failure latch and do not request a redraw.
-                    state.submissionGeneration++;
+                    // Transient readiness failure advances submission only after
+                    // the uncommitted transition; it never commits then rolls back.
+                    state->wakePolicy.failTransient();
+                    state.submissionGeneration=state->wakePolicy.submissionGeneration;
                     RemoveOverlayQuiet(label); state.maskMode=@"时间替换未就绪，等待生命周期输入"; return;
                 }
-                [label setNeedsDisplay];
+                BOOL committedEdge=state->wakePolicy.commit(wakeSnapshot);
+                if (!committedEdge && !state->wakePolicy.committed) {
+                    DiagApplyReturn=@"commit-rejected"; RemoveOverlayQuiet(label); return;
+                }
+                state.clockCommitted=YES;
+                state.resourceGeneration=state->wakePolicy.resourceGeneration;
+                state.submissionGeneration=state->wakePolicy.submissionGeneration;
+                if (committedEdge || visualChanged) [label setNeedsDisplay];
             }
             DiagApplyReturn=clock ? @"main-clock-committed" : @"date-only";
             if (clock) DiagMainApplyReturn=DiagApplyReturn;
@@ -1148,23 +1204,47 @@ static void InvalidateClockResource(UILabel *label) {
     LSGCState *s=objc_getAssociatedObject(label,&StateKey);
     if (!s) return;
     RemoveOverlay(label);
-    s.cachedMask=nil; s.cachedMaskSignature=nil; s.failedResourceKey=nil;
+    s.cachedMask=nil; s.cachedMaskSignature=nil; s.cachedResourceGeneration=0; s.failedResourceKey=nil;
+    s.clockCanvasSize=CGSizeZero; s.clockRim.path=nil;
     s.signature=nil; s.maskHasInk=NO;
-    s.resourceGeneration++; s.submissionGeneration++;
+    s->wakePolicy.invalidate();
+    s.resourceGeneration=s->wakePolicy.resourceGeneration;
+    s.submissionGeneration=s->wakePolicy.submissionGeneration;
+}
+static char SetterDepthKey;
+static BOOL BeginSetter(UILabel *label) {
+    NSNumber *n=objc_getAssociatedObject(label,&SetterDepthKey);
+    LSGCSetterGuard guard; guard.depth=n ? n.unsignedIntValue : 0;
+    BOOL outer=guard.enter();
+    objc_setAssociatedObject(label,&SetterDepthKey,@(guard.depth),OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    return outer;
+}
+static void EndSetter(UILabel *label) {
+    NSNumber *n=objc_getAssociatedObject(label,&SetterDepthKey);
+    LSGCSetterGuard guard; guard.depth=n ? n.unsignedIntValue : 0; guard.leave();
+    objc_setAssociatedObject(label,&SetterDepthKey,guard.depth ? @(guard.depth) : nil,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 static void LabelText(id obj,SEL sel,id value) {
-    UILabel *label=(UILabel *)obj;
+    UILabel *label=(UILabel *)obj; BOOL guarded=IsStandaloneTimeLabel(label); BOOL outer=!guarded || BeginSetter(label);
     NSString *before=[label.text copy];
-    OrigLabelText(obj,sel,value);
-    if (!((before==label.text) || [before isEqualToString:label.text])) InvalidateClockResource(label);
-    Schedule(label);
+    @try { OrigLabelText(obj,sel,value); }
+    @finally {
+        BOOL changed=!((before==label.text) || [before isEqualToString:label.text]);
+        if (guarded) EndSetter(label);
+        if (outer && changed) InvalidateClockResource(label);
+        if (outer) Schedule(label);
+    }
 }
 static void LabelAttributed(id obj,SEL sel,id value) {
-    UILabel *label=(UILabel *)obj;
+    UILabel *label=(UILabel *)obj; BOOL guarded=IsStandaloneTimeLabel(label); BOOL outer=!guarded || BeginSetter(label);
     NSAttributedString *before=[label.attributedText copy];
-    OrigLabelAttributed(obj,sel,value);
-    if (!((before==label.attributedText) || [before isEqualToAttributedString:label.attributedText])) InvalidateClockResource(label);
-    Schedule(label);
+    @try { OrigLabelAttributed(obj,sel,value); }
+    @finally {
+        BOOL changed=!((before==label.attributedText) || [before isEqualToAttributedString:label.attributedText]);
+        if (guarded) EndSetter(label);
+        if (outer && changed) InvalidateClockResource(label);
+        if (outer) Schedule(label);
+    }
 }
 static void InstallLabelHooks(void) {
     if (LabelHooked) return;
@@ -1222,14 +1302,17 @@ static void InstallClockHooks(void) {
             IMP hook;
             if ([method isEqualToString:@"setText:"] || [method isEqualToString:@"setAttributedText:"]) {
                 hook=imp_implementationWithBlock(^(id obj,id value) {
-                    UILabel *label=(UILabel *)obj;
+                    UILabel *label=(UILabel *)obj; BOOL guarded=IsStandaloneTimeLabel(label); BOOL outer=!guarded || BeginSetter(label);
                     NSString *beforeText=[label.text copy];
                     NSAttributedString *beforeAttributed=[label.attributedText copy];
-                    ((void(*)(id,SEL,id))original)(obj,sel,value);
-                    BOOL changed=!((beforeText==label.text || [beforeText isEqualToString:label.text]) &&
-                                    (beforeAttributed==label.attributedText || [beforeAttributed isEqualToAttributedString:label.attributedText]));
-                    if (changed) InvalidateClockResource(label);
-                    Schedule(label);
+                    @try { ((void(*)(id,SEL,id))original)(obj,sel,value); }
+                    @finally {
+                        BOOL changed=!((beforeText==label.text || [beforeText isEqualToString:label.text]) &&
+                                        (beforeAttributed==label.attributedText || [beforeAttributed isEqualToString:label.attributedText]));
+                        if (guarded) EndSetter(label);
+                        if (outer && changed) InvalidateClockResource(label);
+                        if (outer) Schedule(label);
+                    }
                 });
             } else if ([method isEqualToString:@"drawTextInRect:"]) {
                 hook=imp_implementationWithBlock(^(id obj,CGRect rect) {

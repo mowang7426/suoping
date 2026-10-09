@@ -1,45 +1,47 @@
+#include "../LSGCWakeStrategy.h"
 #include <cassert>
 #include <string>
-#include <vector>
 
-// Executable model of the production wake state policy. It deliberately models
-// resource, submission and lifecycle/input generations separately.
-struct WakeState {
-  std::string resourceKey, failedResourceKey;
-  unsigned resourceGen=0, submissionGen=0, applyCount=0, pending=0;
-  bool committed=false, drawChanged=false, redrawRequested=false;
-  void input(bool contentChanged) { if (contentChanged) { ++resourceGen; ++submissionGen; resourceKey.clear(); failedResourceKey.clear(); committed=false; } }
-  void event() { pending=1; }
-  void drain(bool resourceBuildOK, bool hostVisible, bool geometryOK) {
-    if (!pending) return;
-    pending=0;
-    ++applyCount;
-    if (!resourceBuildOK) { failedResourceKey=resourceKey; committed=false; return; }
-    if (!hostVisible || !geometryOK) { committed=false; ++submissionGen; return; }
-    committed=true;
-  }
-  void draw() { bool before=committed; (void)before; drawChanged=false; redrawRequested=false; }
-};
-
+static LSGCWakeSnapshot snap(LSGCWakePolicy& p,const char* k){return p.begin(k);}
 int main() {
-  WakeState s;
-  // Duplicate lifecycle/layout/visibility events coalesce into one async apply.
-  s.event(); s.event(); s.event(); s.drain(true,true,true); assert(s.applyCount==1 && s.committed);
-  // draw is a read-only gate: no scheduling, apply, removal, or redraw feedback.
-  unsigned applies=s.applyCount, sub=s.submissionGen; s.draw();
-  assert(s.applyCount==applies && s.submissionGen==sub && !s.redrawRequested && !s.drawChanged);
-  // A temporary host/geometry failure is retryable on the next real input.
-  s.event(); s.drain(true,false,false); assert(s.failedResourceKey.empty() && !s.committed);
-  s.event(); s.drain(true,true,true); assert(s.committed && s.applyCount==3);
-  // A deterministic resource failure is latched, but only by resource key.
-  s.committed=false; s.resourceKey="same-content"; s.event(); s.drain(false,true,true);
-  assert(s.failedResourceKey=="same-content");
-  unsigned failedApply=s.applyCount; s.event(); s.drain(false,true,true); assert(s.applyCount==failedApply+1);
-  // Content change clears the resource latch and allows a retry.
-  s.input(true); assert(s.failedResourceKey.empty()); s.event(); s.drain(true,true,true); assert(s.committed);
-  // Same text does not invalidate warm resources; lifecycle still can retry submission.
-  unsigned rg=s.resourceGen; s.input(false); assert(s.resourceGen==rg);
-  // Minute update is a real resource/input generation; date is intentionally absent.
-  s.input(true); assert(s.resourceGen==rg+1 && s.submissionGen>=2);
+  bool pending=false; unsigned queued=0;
+  for (int i=0;i<100000;i++) if (LSGCShouldQueueWake(pending)) { pending=true; ++queued; }
+  assert(queued==1); pending=false; assert(LSGCShouldQueueWake(pending));
+  LSGCSetterGuard g;
+  bool privateOuter=g.enter(); bool superOuter=g.enter(); // private override calls super
+  assert(privateOuter && !superOuter); g.leave(); g.leave(); assert(g.depth==0);
+  bool noSuperOuter=g.enter(); assert(noSuperOuter); g.leave(); // override without super
+  bool exceptionOuter=g.enter(); assert(exceptionOuter); g.leave(); assert(g.depth==0); // finally path
+
+  LSGCWakePolicy p;
+  auto a=snap(p,"10:21");
+  assert(!p.failedEarly(a));
+  assert(p.commit(a));                         // first native submission edge
+  assert(!p.commit(a));                        // duplicate apply does not redraw
+  assert(p.removeQuiet());                     // committed -> uncommitted once
+  assert(!p.removeQuiet());
+  assert(p.commit(a));                         // transient retry can recover
+  p.failTransient();
+  assert(!p.currentSubmission(a));             // stale submission is discarded
+  assert(!p.commit(a));
+  auto b=snap(p,"10:22");
+  assert(p.commit(b));
+  p.failResource(b);
+  assert(p.failedEarly(b));                    // production failed-key early return
+  assert(!p.commit(b));
+  for (int i=0;i<10000;i++) { auto x=snap(p,"10:22"); assert(p.failedEarly(x)); }
+  p.invalidate();                               // real content generation clears latch
+  auto c=snap(p,"10:22"); assert(!p.failedEarly(c)); assert(p.commit(c));
+  auto old=c; p.invalidate();                   // stale resource cannot install
+  assert(!p.currentResource(old,"10:22"));
+  auto d=snap(p,"10:23"); assert(p.commit(d));
+  assert(LSGCResourceBindingConsistent("10:23",p.resourceGeneration,"10:23",p.resourceGeneration,120,40,true,true));
+  assert(!LSGCResourceBindingConsistent("10:23",p.resourceGeneration,"10:23",p.resourceGeneration,120,40,false,true));
+  assert(!LSGCResourceBindingConsistent("10:23",p.resourceGeneration,"10:22",p.resourceGeneration,120,40,true,true));
+  assert(!LSGCResourceBindingConsistent("10:23",p.resourceGeneration,"10:23",p.resourceGeneration-1,120,40,true,true));
+  // Repeated draw/events are observational only; no policy edge is created.
+  unsigned redraws=0;
+  for (int i=0;i<1000;i++) { assert(!p.commit(d)); }
+  assert(redraws==0 && p.committed);
   return 0;
 }

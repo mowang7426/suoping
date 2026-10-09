@@ -5,7 +5,7 @@ import hashlib
 root=Path(__file__).resolve().parents[1]
 s=(root/'Tweak.xm').read_text()
 d=(root/'LSGCDiagnostics.inc').read_text()
-a=s.index('static BOOL ClockReplacementReady(UILabel *label) {')
+a=s.index('static BOOL ClockReplacementReadyForCommit(UILabel *label) {')
 b=s.index('static void Apply(UILabel *label) {',a)
 assert 'ClockHostVisible(label,s)' in s[a:b], 'diagnostics reflect verified host safety gate'
 assert '#include "LSGCDiagnostics.inc"' in s
@@ -17,7 +17,7 @@ assert s.count('@finally { --DiagDrawDepth; }')==2
 assert 'if (clock) DiagCaptureMask(image,label.bounds.size,scale)' in s
 for reason in ('hook-not-ready','no-superview','mask-no-ink','readiness-rejected','invalid-bounds','empty-text','exception:'):
     assert reason in s, reason
-failure=s[s.index('if (!ClockReplacementReady(label)) {'):s.index('[label setNeedsDisplay];',s.index('if (!ClockReplacementReady(label)) {'))]
+failure=s[s.index('if (!ClockReplacementReadyForCommit(label)) {'):s.index('BOOL committedEdge=',s.index('if (!ClockReplacementReadyForCommit(label)) {'))]
 assert failure.index('DiagCaptureFailure(label,DiagApplyReturn)') < min(i for i in (failure.find('RemoveOverlay(label)'), failure.find('RemoveOverlayQuiet(label)')) if i >= 0)
 assert 'setNeedsDisplay' not in failure
 for key in ('identity','hookReady','committed','enabled','fontReady','maskHasInk','attached','visible','onScreen','signatureCurrent','opacity','failedReasons','capturedBeforeRemoval','methodOwner','originalIMPExists','currentIMPExists','currentMatchesExpectedHook','maskPixelBoundingBox','HasAlpha','requestedScale','strictScopeRequested','rejectedReason','windowRect','overlayIntersection','font/clock config','hostSelection','hostFailureReason','hostClass','hostWindowRect'):

@@ -1,19 +1,15 @@
 #!/usr/bin/env python3
 from pathlib import Path
 s=Path('Tweak.xm').read_text()
-assert 'failedResourceKey' in s and 'failedSignature' not in s
-assert 'RemoveOverlayQuiet(label)' in s
-assert 'SyncClock' not in s
-# draw implementations must remain read-only and local; no global UIView visibility hooks.
-start=s.index('static void LabelDraw')
-end=s.index('static void LabelLayout',start)
-draw=s[start:end]
-for bad in ('Apply(', 'Schedule(', 'RemoveOverlay(', 'setNeedsDisplay'):
-    assert bad not in draw, bad
+h=Path('LSGCWakeStrategy.h').read_text()
+t=Path('tests/wake_strategy_test.cpp').read_text()
+assert '#import "LSGCWakeStrategy.h"' in s
+for token in ('failedEarly','currentResource','currentSubmission','wakePolicy.commit','wakePolicy.failTransient','wakePolicy.removeQuiet','LSGCShouldQueueWake','LSGCSetterGuard','LSGCResourceBindingConsistent','cachedResourceGeneration'):
+    assert token in s, token
+assert 'LSGCWakePolicy' in t and '#include "../LSGCWakeStrategy.h"' in t
+assert 'failedEarly' in t and 'currentSubmission' in t and 'removeQuiet' in t
+assert 'resourceGeneration' in h and 'submissionGeneration' in h
+start=s.index('static void LabelDraw'); end=s.index('static void LabelLayout',start); draw=s[start:end]
+for bad in ('Apply(', 'Schedule(', 'RemoveOverlay(', 'setNeedsDisplay'): assert bad not in draw, bad
 assert 'setAlpha:' not in s and 'setHidden:' not in s
-# Private label hooks are limited to actual class-owned methods.
-hook=s.index('static void InstallClockHooks')
-assert 'class_copyMethodList' in s[hook:]
-assert 'setText:' in s[hook:] and 'setAttributedText:' in s[hook:]
-assert 'resourceGeneration' in s and 'submissionGeneration' in s
-print('wake strategy static contract passed')
+print('wake strategy production contract passed')
