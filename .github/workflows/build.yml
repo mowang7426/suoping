@@ -58,6 +58,8 @@ jobs:
           /tmp/edge_math_test
           c++ -std=c++17 -Wall -Wextra -Werror tests/palette_test.cpp -o /tmp/palette_test
           /tmp/palette_test
+          c++ -std=c++17 -Wall -Wextra -Werror tests/clock_lifecycle_test.cpp -o /tmp/clock_lifecycle_test
+          /tmp/clock_lifecycle_test
           c++ -std=c++17 -Wall -Wextra -Werror tests/clock_safety_test.cpp -o /tmp/clock_safety_test
           /tmp/clock_safety_test
           python3 scripts/verify_clock_safety.py

@@ -27,6 +27,10 @@ static NSDictionary *DiagGate(UILabel *label) {
     for (UIView *v=s.clockHost; onScreen && v; v=v.superview) {
         if (v.clipsToBounds || v.layer.masksToBounds || ((CALayer *)v.layer.presentationLayer).masksToBounds) { rect=CGRectIntersection(rect,[v convertRect:v.bounds toView:label.window]); onScreen=!CGRectIsEmpty(rect) && !CGRectIsNull(rect); }
     }
+    CGRect localRect=attached ? [s.dateHost convertRect:s.dateHost.bounds toLayer:s.clockHost.layer] : CGRectZero;
+    BOOL localGeometry=!CGRectIsEmpty(localRect) && !CGRectIsNull(localRect) && !CGRectIsInfinite(localRect) &&
+        isfinite(localRect.origin.x) && isfinite(localRect.origin.y) && isfinite(localRect.size.width) && isfinite(localRect.size.height) &&
+        CGRectIntersectsRect(localRect,s.clockHost.bounds);
     CGFloat colorAlpha=0;
     for (id color in s.gradient.colors) colorAlpha=MAX(colorAlpha,CGColorGetAlpha((__bridge CGColorRef)color));
     CGFloat opacity=s.gradient.opacity*s.dateHost.opacity*colorAlpha;
@@ -34,7 +38,10 @@ static NSDictionary *DiagGate(UILabel *label) {
         @"enabled":@([Config[@"enabled"] boolValue]),@"siblingSelection":@([s.hostSelection isEqualToString:@"alpha-zero-wrapper-sibling"]),@"fontReady":@(fontReady),@"maskHasInk":@(s.maskHasInk),@"attached":@(attached),
         @"visible":@(ClockHostVisible(label,s)),@"onScreen":@(onScreen),@"signatureCurrent":@([s.signature isEqualToString:DateSignature(label)]),@"opacity":@(opacity)} mutableCopy];
     NSMutableArray *failed=[NSMutableArray array];
-    for (NSString *key in @[@"identity",@"hookReady",@"committed",@"siblingSelection",@"enabled",@"fontReady",@"maskHasInk",@"attached",@"visible",@"onScreen",@"signatureCurrent"])
+    gate[@"localGeometry"]=@(localGeometry);
+    gate[@"onScreenIsDiagnosticOnly"]=@YES;
+    gate[@"replacementReady"]=@(ClockReplacementReady(label));
+    for (NSString *key in @[@"identity",@"hookReady",@"committed",@"siblingSelection",@"enabled",@"fontReady",@"maskHasInk",@"attached",@"visible",@"localGeometry",@"signatureCurrent"])
         if (![gate[key] boolValue]) [failed addObject:key];
     if (!(opacity>=0.01)) [failed addObject:@"opacity"];
     gate[@"outlineReady"]=@(outlineReady);
@@ -131,6 +138,7 @@ static NSString *DiagReport(void) {
     [lines addObject:@"\n\n=== RealClockDiagnostics v1 ===\n计数为进程累计；主时间 draw 排除 SnapshotText 镜像绘制及 super 链重复调用。安全门通过/附加遮罩不等于真机视觉成功。\n日期渐变、通知时间、充电预估一律不能计入主时间成功。"];
     [lines addObject:[NSString stringWithFormat:@"InstallHooks=%llu Hooked=%d LabelHooked=%d NativeClassesLoaded=%d\nhookCalls layout=%llu didMove=%llu draw=%llu\nmainClockDraw=%llu nativePass=%llu customSuppress=%llu\nSchedule=%llu lastEarlyReturn=%@\nApply=%llu lastEarlyReturn=%@",
         DiagInstall,Hooked,LabelHooked,NativeClassesLoaded,DiagLayout,DiagMove,DiagDraw,DiagMainDraw,DiagNative,DiagSuppress,DiagSchedule,DiagScheduleReturn?:@"none",DiagApply,DiagApplyReturn?:@"none"]];
+    [lines addObject:[NSString stringWithFormat:@"clockLifecycle warmSync=%llu rebuild=%llu nativeRestore=%llu (no per-event logging)",DiagWarmSync,DiagClockBuild,DiagClockRestore]];
     [lines addObject:[NSString stringWithFormat:@"mainClockApply=%llu lastMainClockApplyReturn=%@ (independent of date-only)",DiagMainApply,DiagMainApplyReturn ?: @"never-attempted"]];
     for (NSString *name in @[@"UIView",@"UILabel",@"SBFLockScreenDateView",@"CSProminentTimeView",@"CSProminentDisplayView",@"_UIAnimatingLabel"]) {
         Class cls=NSClassFromString(name);

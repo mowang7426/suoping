@@ -14,6 +14,7 @@
 #import "LSGCClockSafety.h"
 #import "LSGCClockScope.h"
 #import "LSGCClockRender.h"
+#import "LSGCClockLifecycle.h"
 
 // An optional companion: never patch, replace or distribute Liquidify binaries.
 extern "C" void MSHookMessageEx(Class, SEL, IMP, IMP *);
@@ -39,6 +40,8 @@ static void Walk(UIView *view,NSUInteger depth);
 static NSString *HookReport;
 static char StateKey, PendingKey;
 static BOOL Rendering;
+static BOOL ClockUpdating;
+static unsigned long long DiagWarmSync, DiagClockBuild, DiagClockRestore;
 static NSUInteger Revision;
 static void Apply(UILabel *label);
 static BOOL ClockReplacementReady(UILabel *label);
@@ -86,6 +89,8 @@ static NSString *DiagReport(void);
 @property(nonatomic,strong) CALayer *edgeMask;
 @property(nonatomic,strong) CALayer *edgeBevel;
 @property(nonatomic,copy) NSString *signature;
+@property(nonatomic,copy) NSString *failedSignature;
+@property(nonatomic) NSUInteger failedRevision;
 @property(nonatomic,copy) NSString *maskMode;
 @property(nonatomic) BOOL busy;
 @property(nonatomic) BOOL dirty;
@@ -255,7 +260,7 @@ static UIView *ClockOverlayParent(UILabel *label, NSString **reason) {
         !isfinite(hostRect.origin.x) || !isfinite(hostRect.origin.y) ||
         !isfinite(hostRect.size.width) || !isfinite(hostRect.size.height) ||
         !CGRectIntersectsRect(hostRect,label.window.bounds)) {
-        if (reason) *reason=@"sibling-host-invalid-or-offscreen-rect"; return nil;
+        if (reason) *reason=@"sibling-host-invalid-rect"; return nil;
     }
     // Source-only validation: skip alpha/opacity on exactly the chosen wrapper,
     // not hidden, other low-alpha views, or any ancestor of the visible host.
@@ -270,22 +275,23 @@ static UIView *ClockOverlayParent(UILabel *label, NSString **reason) {
             if (reason) *reason=@"unsupported-source-3d-transform"; return nil;
         }
     }
+    // Use model visibility for common ancestors: presentation opacity can be
+    // zero on the first wake frame although both glyph paths are fading in.
+    // Hidden/offscreen/clipped model geometry still restores native drawing.
     CGFloat effectiveOpacity=1;
-    CGRect visibleRect=[label convertRect:label.bounds toView:label.window];
-    if (CGRectIsEmpty(visibleRect) || CGRectIsNull(visibleRect) || CGRectIsInfinite(visibleRect) ||
-        !isfinite(visibleRect.origin.x) || !isfinite(visibleRect.origin.y) ||
-        !isfinite(visibleRect.size.width) || !isfinite(visibleRect.size.height)) {
-        if (reason) *reason=@"source-off-screen"; return nil;
+    CGRect sourceRect=[label convertRect:label.bounds toView:label.window];
+    if (CGRectIsEmpty(sourceRect) || CGRectIsNull(sourceRect) || CGRectIsInfinite(sourceRect) ||
+        !isfinite(sourceRect.origin.x) || !isfinite(sourceRect.origin.y) ||
+        !isfinite(sourceRect.size.width) || !isfinite(sourceRect.size.height)) {
+        if (reason) *reason=@"source-invalid-geometry"; return nil;
     }
-    visibleRect=CGRectIntersection(visibleRect,label.window.bounds);
-    // All visibility/clip gates now follow the selected host's actual ancestry.
+    sourceRect=CGRectIntersection(sourceRect,label.window.bounds);
     for (UIView *v=host; v; v=v.superview) {
         CALayer *shown=(CALayer *)v.layer.presentationLayer ?: v.layer;
-        if (v.hidden || v.layer.hidden || shown.hidden || !isfinite(v.alpha) || v.alpha<0.01 ||
-            !isfinite(v.layer.opacity) || v.layer.opacity<0.01 || !isfinite(shown.opacity) || shown.opacity<0.01) {
-            if (reason) *reason=[@"hidden-or-low-alpha:" stringByAppendingString:NSStringFromClass(v.class)]; return nil;
+        if (v.hidden || v.layer.hidden || !LSGCClockCommonOpacityValid(v.alpha,v.layer.opacity,shown.opacity)) {
+            if (reason) *reason=@"host-hidden-or-invalid-opacity"; return nil;
         }
-        effectiveOpacity*=MIN(v.layer.opacity,shown.opacity);
+        effectiveOpacity*=v.layer.opacity;
         if (!CATransform3DIsAffine(v.layer.transform) || !CATransform3DIsAffine(v.layer.sublayerTransform) ||
             !CATransform3DIsAffine(shown.transform) || !CATransform3DIsAffine(shown.sublayerTransform)) {
             if (reason) *reason=@"unsupported-host-3d-transform"; return nil;
@@ -294,23 +300,19 @@ static UIView *ClockOverlayParent(UILabel *label, NSString **reason) {
             if (reason) *reason=[@"unsupported-host-layer-mask:" stringByAppendingString:NSStringFromClass(v.class)]; return nil;
         }
         if (v.clipsToBounds || v.layer.masksToBounds || shown.masksToBounds)
-            visibleRect=CGRectIntersection(visibleRect,[v convertRect:v.bounds toView:label.window]);
+            sourceRect=CGRectIntersection(sourceRect,[v convertRect:v.bounds toView:label.window]);
     }
-    if (effectiveOpacity<0.01 || CGRectIsEmpty(visibleRect) || CGRectIsNull(visibleRect)) {
-        if (reason) *reason=effectiveOpacity<0.01 ? @"host-low-effective-opacity" : @"source-off-screen"; return nil;
+    if (effectiveOpacity<0.01 || CGRectIsEmpty(sourceRect) || CGRectIsNull(sourceRect)) {
+        if (reason) *reason=@"host-low-opacity-or-source-clipped"; return nil;
     }
     return host;
 }
 static BOOL ClockHostVisible(UILabel *label, LSGCState *s) {
     UIView *host=ClockOverlayParent(label,NULL);
     if (!host || host!=s.clockHost || s.dateHost.hidden || s.gradient.hidden) return NO;
-    CGFloat effectiveOpacity=1;
-    for (CALayer *layer=s.dateHost; layer; layer=layer.superlayer) {
-        CALayer *shown=(CALayer *)layer.presentationLayer ?: layer;
-        if (layer.hidden || shown.hidden || layer.opacity<0.01 || shown.opacity<0.01) return NO;
-        effectiveOpacity*=MIN(layer.opacity,shown.opacity);
-    }
-    return effectiveOpacity*s.gradient.opacity>=0.01;
+    // Only our own layers need an opacity check. Traversing host ancestors here
+    // used to reopen native drawing for the entire wake presentation fade.
+    return s.dateHost.opacity*s.gradient.opacity>=0.01;
 }
 static UIView *DateOverlayParent(UILabel *label) {
     // A sibling of the actual time label inherits every native ancestor
@@ -329,6 +331,13 @@ static UIView *DateOverlayParent(UILabel *label) {
     }
     return nil;
 }
+static void SyncClock(UILabel *label) {
+    if (ClockUpdating || Rendering || !StartupComplete || !NSThread.isMainThread) return;
+    ClockUpdating=YES;
+    [CATransaction begin]; [CATransaction setDisableActions:YES];
+    @try { Apply(label); }
+    @finally { [CATransaction commit]; ClockUpdating=NO; }
+}
 static void Schedule(UILabel *label) {
     DiagInc(&DiagSchedule);
     if (!NSThread.isMainThread || Rendering || !StartupComplete) {
@@ -338,6 +347,11 @@ static void Schedule(UILabel *label) {
     BOOL tracked=objc_getAssociatedObject(label,&StateKey)!=nil;
     BOOL glass=GlassClass && [label isKindOfClass:GlassClass];
     if (!tracked && !glass && !IsStandaloneTimeLabel(label) && !DateOverlayParent(label)) { DiagScheduleReturn=@"not-tracked/glass/date-or-main-clock"; return; }
+    // Main time cannot queue behind the native draw/CA commit. Date keeps its
+    // original coalesced route; main-time warm hits do no bitmap work.
+    if (IsStandaloneTimeLabel(label)) {
+        DiagScheduleReturn=@"main-clock-synchronous"; SyncClock(label); return;
+    }
     if (objc_getAssociatedObject(label,&PendingKey)) { DiagScheduleReturn=@"already-pending"; return; }
     DiagScheduleReturn=@"queued";
     objc_setAssociatedObject(label,&PendingKey,@YES,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -795,14 +809,18 @@ static void RemoveOverlay(UILabel *label) {
         s.hidOriginalLabel=NO;
     }
     if (s.didUnclipClock) { label.clipsToBounds=s.originalClipsToBounds; s.didUnclipClock=NO; }
-    if (s.clockCommitted) { s.clockCommitted=NO; [label setNeedsDisplay]; }
-    s.maskHasInk=NO;
+    if (s.clockCommitted) { s.clockCommitted=NO; [label setNeedsDisplay]; DiagInc(&DiagClockRestore); }
+    // A detached valid main-clock bitmap/path stays warm on this label (one
+    // entry, lifetime bounded by the label). Readiness still requires remount.
+    BOOL keepClockCache=s.clockHost && s.maskHasInk && s.mask.contents && s.signature.length;
+    if (!keepClockCache) s.maskHasInk=NO;
     s.ticket++; s.busy=NO; s.dirty=NO;
     [s.gradient removeFromSuperlayer]; [s.gradient removeAllAnimations];
     [s.dateHost removeFromSuperlayer];
     if (s.clockRim) [s.clockRim removeFromSuperlayer];
     ClearEdges(s);
-    s.signature=nil; s.revision=0;
+    if (!keepClockCache) s.signature=nil;
+    s.revision=0;
 }
 // Render at the final clock magnification, not native label resolution.
 // Cap each dimension and total pixels; no bitmap work for position/transform updates.
@@ -828,6 +846,12 @@ static NSString *DateSignature(UILabel *label) {
     // Outline outsets/weight rebuild only on text or settings changes.
     return [result stringByAppendingFormat:@"|%@|%@|%@",Config[@"clockWeight"],Config[@"clockEdgeWidth"],Config[@"clockEdgeEnabled"]];
 }
+// Font validation precedes expensive CoreText work, including warm hits.
+static BOOL ClockFontReady(UILabel *label) {
+    NSString *name=[Config[@"fontName"] isKindOfClass:NSString.class] ? Config[@"fontName"] : @"";
+    return !name.length || ImportedFont!=nil ||
+        (![Config[@"fontPath"] length] && [UIFont fontWithName:name size:label.font.pointSize]!=nil);
+}
 // Suppress only the glyph draw, never UIView alpha/hidden. The overlay lives
 // in a verified visible host; native ancestor transforms are inherited once.
 static BOOL ClockReplacementReady(UILabel *label) {
@@ -841,14 +865,19 @@ static BOOL ClockReplacementReady(UILabel *label) {
         (s.clockRim.path && s.clockRim.superlayer==s.dateHost && s.clockRim.lineWidth>0);
     BOOL attached=outlineReady && s.clockHost && s.dateHost.superlayer==s.clockHost.layer && s.gradient.superlayer==s.dateHost &&
         s.gradient.mask==s.mask && s.mask.contents!=nil;
+    CGRect localRect=attached ? [s.dateHost convertRect:s.dateHost.bounds toLayer:s.clockHost.layer] : CGRectZero;
+    BOOL localGeometry=!CGRectIsEmpty(localRect) && !CGRectIsInfinite(localRect) && !CGRectIsNull(localRect) &&
+        isfinite(localRect.origin.x) && isfinite(localRect.origin.y) && isfinite(localRect.size.width) && isfinite(localRect.size.height) &&
+        CGRectIntersectsRect(localRect,s.clockHost.bounds);
+    attached=attached && localGeometry;
     CGRect rect=attached && label.window ? [s.dateHost convertRect:s.dateHost.bounds toLayer:label.window.layer] : CGRectZero;
     BOOL onScreen=!CGRectIsEmpty(rect) && !CGRectIsInfinite(rect) && !CGRectIsNull(rect) &&
         isfinite(rect.origin.x) && isfinite(rect.origin.y) && isfinite(rect.size.width) && isfinite(rect.size.height) &&
         CGRectIntersectsRect(rect,label.window.bounds);
     for (UIView *v=s.clockHost; onScreen && v; v=v.superview) {
         if (v.clipsToBounds || v.layer.masksToBounds || ((CALayer *)v.layer.presentationLayer).masksToBounds) {
-            CGRect clip=[v convertRect:v.bounds toView:label.window];
-            rect=CGRectIntersection(rect,clip); onScreen=!CGRectIsEmpty(rect) && !CGRectIsNull(rect);
+            rect=CGRectIntersection(rect,[v convertRect:v.bounds toView:label.window]);
+            onScreen=!CGRectIsEmpty(rect) && !CGRectIsNull(rect);
         }
     }
     CGFloat colorAlpha=0;
@@ -875,7 +904,7 @@ static void Apply(UILabel *label) {
     if (!isGlassLabel && dateParent) {
         NSString *displayText=label.text ?: label.attributedText.string;
         BOOL allowDate=TimeText(displayText) || [Config[@"dateGradient"] boolValue];
-        if (![Config[@"enabled"] boolValue] || !allowDate || !Visible(dateParent) ||
+        if (![Config[@"enabled"] boolValue] || !allowDate || (!clock && !Visible(dateParent)) ||
             !(label.text.length || label.attributedText.length) || label.bounds.size.width<1 || label.bounds.size.height<1 ||
             label.bounds.size.width>2048 || label.bounds.size.height>2048) {
             DiagApplyReturn=![Config[@"enabled"] boolValue] ? @"disabled" : (!allowDate ? @"date-disabled" : (!Visible(dateParent) ? @"invisible" : (!(label.text.length || label.attributedText.length) ? @"empty-text" : @"invalid-bounds")));
@@ -892,8 +921,20 @@ static void Apply(UILabel *label) {
         if (clock) { state.clockHost=dateParent; state.hostSelection=hostReason; }
         if (!state.dateHost) { state.dateHost=[CALayer layer]; state.dateHost.name=@"LSGC.DateOverlay"; }
         NSString *signature=DateSignature(label);
+        LSGCClockInput input={ [Config[@"enabled"] boolValue], (bool)(Hooked && LabelHooked),
+            dateParent!=nil, clock ? (bool)ClockFontReady(label) : true, true,
+            (bool)(state.maskHasInk && state.mask.contents), (bool)[state.signature isEqualToString:signature],
+            (bool)(state.failedRevision==Revision && [state.failedSignature isEqualToString:signature]) };
+        LSGCClockAction action=clock ? LSGCClockNext(input) :
+            ([state.signature isEqualToString:signature] ? LSGCClockReuse : LSGCClockBuild);
+        if (action==LSGCClockNative) {
+            DiagApplyReturn=@"font-or-hook-not-ready"; RemoveOverlay(label); return;
+        }
+        BOOL changed=action==LSGCClockBuild || !state.clockCommitted;
         @try {
-            if (![state.signature isEqualToString:signature]) {
+            if (action==LSGCClockBuild) {
+                // An unsuccessful rebuild must not relabel old ink/path as new.
+                if (clock) { state.maskHasInk=NO; state.signature=nil; state.failedSignature=signature; state.failedRevision=Revision; DiagInc(&DiagClockBuild); }
                 UIImage *image=nil;
                 if (clock) DiagMask=@{@"source":@"SnapshotText/main-clock",@"status":@"attempted"};
                 @try { Rendering=YES; image=SnapshotText(label,TextMaskScale(label)); }
@@ -909,6 +950,7 @@ static void Apply(UILabel *label) {
                     label.alpha=0.0;
                 }
                 state.signature=signature;
+                state.failedSignature=nil;
             }
             // UIKit may restore a date label's alpha while reusing the cached
             // signature. Reassert replacement on every event, not only rebuilds,
@@ -961,11 +1003,12 @@ static void Apply(UILabel *label) {
             } @finally { [CATransaction commit]; }
             if (clock) {
                 state.clockCommitted=YES;
-                if (!ClockReplacementReady(label)) {
+                if (!LSGCClockCommit(action,ClockReplacementReady(label))) {
                     DiagApplyReturn=@"readiness-rejected"; DiagCaptureFailure(label,DiagApplyReturn);
                     RemoveOverlay(label); state.maskMode=@"时间替换未就绪，保留系统时间"; return;
                 }
-                [label setNeedsDisplay];
+                if (action==LSGCClockReuse) DiagInc(&DiagWarmSync);
+                if (changed && DiagDrawDepth==0) [label setNeedsDisplay];
             }
             DiagApplyReturn=clock ? @"main-clock-committed" : @"date-only";
             if (clock) DiagMainApplyReturn=DiagApplyReturn;
@@ -1080,6 +1123,30 @@ static void InstallHooks(void) {
         LabelHooked ? @"已安装" : @"失败",[status componentsJoinedByString:@"; "]];
     if (![previousReport isEqualToString:HookReport]) NSLog(@"[LSGC] installation: %@",HookReport);
 }
+static void (*OrigViewHidden)(id,SEL,BOOL);
+static void (*OrigViewAlpha)(id,SEL,CGFloat);
+static void (*OrigViewSuperview)(id,SEL);
+static void SourceVisibilityChanged(UIView *view) {
+    if (!StartupComplete || Rendering || ClockUpdating || !NSThread.isMainThread) return;
+    for (UILabel *label in Labels.allObjects) {
+        LSGCState *state=objc_getAssociatedObject(label,&StateKey);
+        if (!state.clockHost && !IsStandaloneTimeLabel(label)) continue;
+        // Revalidate only tracked strict main-time labels affected by this
+        // ancestor setter; unrelated UIView/UILabel events never render ink.
+        for (UIView *v=label; v; v=v.superview) {
+            if (v==view) { SyncClock(label); break; }
+        }
+    }
+}
+static void ViewHidden(id obj,SEL sel,BOOL value) {
+    OrigViewHidden(obj,sel,value); SourceVisibilityChanged((UIView *)obj);
+}
+static void ViewAlpha(id obj,SEL sel,CGFloat value) {
+    OrigViewAlpha(obj,sel,value); SourceVisibilityChanged((UIView *)obj);
+}
+static void ViewSuperview(id obj,SEL sel) {
+    OrigViewSuperview(obj,sel); SourceVisibilityChanged((UIView *)obj);
+}
 static void (*OrigViewMove)(id,SEL);
 static void ViewMove(id obj,SEL sel) {
     DiagInc(&DiagMove); OrigViewMove(obj,sel);
@@ -1098,6 +1165,7 @@ static void LabelDraw(id obj,SEL sel,CGRect rect) {
     if (main) DiagInc(&DiagMainDraw);
     ++DiagDrawDepth;
     @try {
+        if (main) Schedule((UILabel *)obj);
         if (!Rendering && ClockReplacementReady((UILabel *)obj)) { if (main) DiagInc(&DiagSuppress); return; }
         if (main) DiagInc(&DiagNative);
         OrigLabelDraw(obj,sel,rect);
@@ -1130,6 +1198,9 @@ static void InstallLabelHooks(void) {
     Method viewMove=class_getInstanceMethod(UIView.class,@selector(didMoveToWindow));
     if (!layout || !move || !text || !attributed || !draw || !viewMove) return;
     // Install only missing hooks: a partial failure must not hook our own IMP again.
+    if (!OrigViewHidden) MSHookMessageEx(UIView.class,@selector(setHidden:),(IMP)ViewHidden,(IMP *)&OrigViewHidden);
+    if (!OrigViewAlpha) MSHookMessageEx(UIView.class,@selector(setAlpha:),(IMP)ViewAlpha,(IMP *)&OrigViewAlpha);
+    if (!OrigViewSuperview) MSHookMessageEx(UIView.class,@selector(didMoveToSuperview),(IMP)ViewSuperview,(IMP *)&OrigViewSuperview);
     if (!OrigViewMove) MSHookMessageEx(UIView.class,@selector(didMoveToWindow),(IMP)ViewMove,(IMP *)&OrigViewMove);
     if (!OrigLabelLayout) MSHookMessageEx(cls,@selector(layoutSubviews),(IMP)LabelLayout,(IMP *)&OrigLabelLayout);
     if (!OrigLabelMove) MSHookMessageEx(cls,@selector(didMoveToWindow),(IMP)LabelMove,(IMP *)&OrigLabelMove);
@@ -1142,7 +1213,10 @@ static void InstallLabelHooks(void) {
     DiagRememberIMP(cls,@selector(setText:),(IMP)OrigLabelText,(IMP)LabelText);
     DiagRememberIMP(cls,@selector(setAttributedText:),(IMP)OrigLabelAttributed,(IMP)LabelAttributed);
     DiagRememberIMP(cls,@selector(drawTextInRect:),(IMP)OrigLabelDraw,(IMP)LabelDraw);
-    LabelHooked=OrigViewMove && OrigLabelLayout && OrigLabelMove && OrigLabelText && OrigLabelAttributed && OrigLabelDraw;
+    DiagRememberIMP(UIView.class,@selector(setHidden:),(IMP)OrigViewHidden,(IMP)ViewHidden);
+    DiagRememberIMP(UIView.class,@selector(setAlpha:),(IMP)OrigViewAlpha,(IMP)ViewAlpha);
+    DiagRememberIMP(UIView.class,@selector(didMoveToSuperview),(IMP)OrigViewSuperview,(IMP)ViewSuperview);
+    LabelHooked=OrigViewHidden && OrigViewAlpha && OrigViewSuperview && OrigViewMove && OrigLabelLayout && OrigLabelMove && OrigLabelText && OrigLabelAttributed && OrigLabelDraw;
 }
 // Hook overrides as well as UILabel: private animating labels need not call super.
 // One block/original IMP per class/selector avoids inherited-hook recursion.
@@ -1180,7 +1254,8 @@ static void InstallClockHooks(void) {
                     if (main) DiagInc(&DiagMainDraw);
                     ++DiagDrawDepth;
                     @try {
-                        if (!Rendering && ClockReplacementReady((UILabel *)obj)) { if (main) DiagInc(&DiagSuppress); return; }
+                        if (main) Schedule((UILabel *)obj);
+        if (!Rendering && ClockReplacementReady((UILabel *)obj)) { if (main) DiagInc(&DiagSuppress); return; }
                         if (main) DiagInc(&DiagNative);
                         ((void(*)(id,SEL,CGRect))original)(obj,sel,rect);
                     } @finally { --DiagDrawDepth; }
@@ -1224,10 +1299,6 @@ static void Discover(void) {
 static void DiscoverAndApply(void) {
     Discover();
     for (UILabel *label in Labels.allObjects) Schedule(label);
-}
-static void RetryDateDiscover(void) {
-    // Date success must never cancel the remaining bounded clock retries.
-    LoadConfig(); DiscoverAndApply();
 }
 #include "LSGCDiagnostics.inc"
 static void WriteDiagnostics(void) {
@@ -1462,7 +1533,7 @@ static void AddedImage(const struct mach_header *header,intptr_t slide) {
 __attribute__((constructor)) static void Start(void) {
     @autoreleasepool {
         if (![NSBundle.mainBundle.bundleIdentifier isEqualToString:@"com.apple.springboard"]) return;
-        dispatch_async(dispatch_get_main_queue(), ^{
+        void (^initialize)(void)=^{
             Labels=[NSHashTable weakObjectsHashTable]; DateViews=[NSHashTable weakObjectsHashTable]; LoadConfig();
             StartupComplete=YES;
             InstallHooks();
@@ -1481,11 +1552,12 @@ __attribute__((constructor)) static void Start(void) {
             [notes addObserverForName:UIApplicationDidFinishLaunchingNotification object:nil queue:queue usingBlock:refresh];
             [notes addObserverForName:UIApplicationWillEnterForegroundNotification object:nil queue:queue usingBlock:refresh];
             [notes addObserverForName:UIScreenDidConnectNotification object:nil queue:queue usingBlock:refresh];
-            for (NSNumber *delay in @[@0.4,@1.2,@3.0,@8.0]) {
-                dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(delay.doubleValue*NSEC_PER_SEC)),dispatch_get_main_queue(), ^{ RetryDateDiscover(); });
-            }
+            // No delayed discovery takeover. Late classes/windows are handled
+            // by dyld, lifecycle and local hierarchy events; draw is synchronous.
             // Event-driven only: system clock/layout hooks trigger updates.
             // No polling timer or display link is installed in SpringBoard.
-        });
+        };
+        if (NSThread.isMainThread) initialize();
+        else dispatch_async(dispatch_get_main_queue(),initialize);
     }
 }
