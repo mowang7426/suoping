@@ -91,9 +91,10 @@ jobs:
           /tmp/edge_coordinates_test
 
       - name: Verify system prompt suppression strategy
-        run: python3 scripts/verify_hide_system_prompts.py
-
-        run: python3 scripts/verify_settings.py
+        run: |
+          set -e
+          python3 scripts/verify_hide_system_prompts.py
+          python3 scripts/verify_settings.py
 
       - name: Verify package metadata
         run: |
