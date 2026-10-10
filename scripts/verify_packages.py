@@ -44,7 +44,7 @@ def verify(path):
         assert '彩边' not in str(root), 'obsolete date edge explanation shipped'
         for key in ['color1','color2','color3','color4','color5','clockOpacity','clockWeight','clockEdgeColor','clockEdgeEnabled','clockEdgeWidth','clockEdgeStrength']:
             assert key in settings, f'missing shared palette/independent ink setting: {key}'
-        assert subprocess.check_output(['dpkg-deb','-f',str(path),'Version'],text=True).strip()=='2.0.14'
+        assert subprocess.check_output(['dpkg-deb','-f',str(path),'Version'],text=True).strip()=='2.0.15'
         assert len(read(BUNDLE + info['CFBundleExecutable'])) > 0
     print(f'PASS {path}: preference entry, controller binary and resources present')
 
