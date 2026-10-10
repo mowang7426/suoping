@@ -35,14 +35,12 @@ static BOOL LSGCLockContainer(UIView *v) {
 static NSString *LSGCButtonWords(UIView *v) {
     NSMutableString *s=[NSMutableString string];
     for (NSString *x in @[v.accessibilityIdentifier ?: @"",v.accessibilityLabel ?: @""]) [s appendFormat:@" %@",x];
-    if ([v isKindOfClass:UIControl.class]) {
-        UIControl *c=(UIControl *)v;
-        if ([c respondsToSelector:@selector(currentTitle)]) [s appendFormat:@" %@",c.currentTitle ?: @""];
-        if ([c respondsToSelector:@selector(imageForState:)]) {
-            for (NSNumber *state in @[@(UIControlStateNormal),@(UIControlStateHighlighted),@(UIControlStateSelected)]) {
+    if ([v isKindOfClass:UIButton.class]) {
+        UIButton *c=(UIButton *)v;
+        if (c.currentTitle) [s appendFormat:@" %@",c.currentTitle];
+        for (NSNumber *state in @[@(UIControlStateNormal),@(UIControlStateHighlighted),@(UIControlStateSelected)]) {
                 UIImage *im=[c imageForState:state.unsignedIntegerValue];
                 if (im) [s appendFormat:@" %@",im.description ?: @""];
-            }
         }
     }
     return s.lowercaseString;
