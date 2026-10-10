@@ -16,7 +16,7 @@ static NSMutableSet *LSGCPromptObjects;
 @implementation LSGCPromptState @end
 
 static BOOL LSGCPromptEnabled(void) {
-    NSDictionary *d=[NSUserDefaults standardUserDefaults];
+    NSUserDefaults *d=[NSUserDefaults standardUserDefaults];
     return [d boolForKey:@"hideLockScreenPrompts"];
 }
 static BOOL LSGCClassInChain(Class c, NSArray *names) {
