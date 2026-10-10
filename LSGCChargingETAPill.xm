@@ -48,8 +48,13 @@ static UIView *LSGCCommonHost(UIView *a, UIView *b) {
     for (UIView *x=a;x;x=x.superview) for (UIView *y=b;y;y=y.superview) if (x==y) return x;
     return nil;
 }
-static void LSGCRemove(void) {
-    [LSGCPill removeFromSuperview]; LSGCPill=nil; LSGCPillHost=nil; LSGCLastText=nil;
+static NSArray<UIWindow *> *LSGCWindows(void) {
+    NSMutableArray<UIWindow *> *result=[NSMutableArray array];
+    for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
+        if (![scene isKindOfClass:[UIWindowScene class]]) continue;
+        [result addObjectsFromArray:((UIWindowScene *)scene).windows];
+    }
+    return result;
 }
 void LSGCChargingETAPillClear(void) { dispatch_async(dispatch_get_main_queue(), ^{ LSGCRemove(); }); }
 void LSGCChargingETAPillRefresh(void) {
@@ -62,7 +67,7 @@ void LSGCChargingETAPillRefresh(void) {
             // UIDevice has no ETA. Do not infer minutes from level or elapsed time.
             NSString *text=LSGCChargingETAText(charging,NO,0,full);
             if (!text) { LSGCRemove(); LSGCRefreshing=NO; return; }
-            for (UIWindow *w in UIApplication.sharedApplication.windows) {
+            for (UIWindow *w in LSGCWindows()) {
                 __block UIButton *f=nil,*c=nil;
                 for (UIView *root in w.subviews) LSGCFind(root,&f,&c);
                 if (!f||!c) continue;
