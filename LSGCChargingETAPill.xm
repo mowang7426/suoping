@@ -48,6 +48,9 @@ static UIView *LSGCCommonHost(UIView *a, UIView *b) {
     for (UIView *x=a;x;x=x.superview) for (UIView *y=b;y;y=y.superview) if (x==y) return x;
     return nil;
 }
+static void LSGCRemove(void) {
+    [LSGCPill removeFromSuperview]; LSGCPill=nil; LSGCPillHost=nil; LSGCLastText=nil;
+}
 static NSArray<UIWindow *> *LSGCWindows(void) {
     NSMutableArray<UIWindow *> *result=[NSMutableArray array];
     for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
