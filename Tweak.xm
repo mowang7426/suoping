@@ -1641,6 +1641,7 @@ static void AddedImage(const struct mach_header *header,intptr_t slide) {
 __attribute__((constructor)) static void Start(void) {
     @autoreleasepool {
         if (![NSBundle.mainBundle.bundleIdentifier isEqualToString:@"com.apple.springboard"]) return;
+        NSLog(@"[LSGC] constructor initialized");
         dispatch_async(dispatch_get_main_queue(), ^{
             Labels=[NSHashTable weakObjectsHashTable]; DateViews=[NSHashTable weakObjectsHashTable]; LoadConfig(); NativeClockSuppressionState=NativeClockSuppressionEnabled();
             StartupComplete=YES;
