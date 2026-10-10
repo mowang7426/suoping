@@ -7,14 +7,26 @@ static __weak UIView *LSGCPill;
 static NSString *LSGCLastText;
 static BOOL LSGCRefreshing;
 static BOOL LSGCHooksInstalled;
+static BOOL LSGCBatteryObserversInstalled;
+static id LSGCBatteryLevelObserver;
+static id LSGCBatteryStateObserver;
 static NSMutableSet *LSGCHookedContainers;
 
-NSString *LSGCChargingETAText(BOOL charging, BOOL reliable, NSInteger minutes, BOOL full) {
+NSString *LSGCBatteryText(UIDeviceBatteryState state, float level) {
+    BOOL charging = state == UIDeviceBatteryStateCharging || state == UIDeviceBatteryStateFull;
     if (!charging) return nil;
-    if (full) return @"已充满";
-    if (reliable && minutes > 0 && minutes <= 24 * 60) return [NSString stringWithFormat:@"预计还需 %ld 分钟充满", (long)minutes];
-    return @"正在充电";
+    if (state == UIDeviceBatteryStateFull) return @"已充满 · 100%";
+    NSInteger percent = LSGCBatteryPercent(level);
+    return percent < 0 ? @"正在充电" : [NSString stringWithFormat:@"正在充电 · %ld%%", (long)percent];
 }
+NSInteger LSGCBatteryPercent(float level) {
+    // UIDevice uses -1 for unavailable. Only [0,1] is valid; round half up
+    // and clamp the legal endpoints, without ever turning a read failure into 0%.
+    if (!isfinite(level) || level < 0.0f || level > 1.0f) return -1;
+    NSInteger p = (NSInteger)floorf(level * 100.0f + 0.5f);
+    return MAX(0, MIN(100, p));
+}
+
 static BOOL LSGCOn(void) {
     CFPreferencesAppSynchronize((__bridge CFStringRef)LSGCDomain);
     id v=CFBridgingRelease(CFPreferencesCopyAppValue(CFSTR("chargingETAPill"), (__bridge CFStringRef)LSGCDomain));
@@ -99,17 +111,33 @@ static void LSGCHookContainerClass(Class cls) {
     }
 }
 static void LSGCInstallContainerHooks(void) {
+    UIDevice *device=UIDevice.currentDevice;
+    device.batteryMonitoringEnabled=YES;
+    if (!LSGCBatteryObserversInstalled) {
+        NSNotificationCenter *nc=NSNotificationCenter.defaultCenter;
+        LSGCBatteryLevelObserver=[nc addObserverForName:UIDeviceBatteryLevelDidChangeNotification object:device queue:NSOperationQueue.mainQueue usingBlock:^(__unused NSNotification *n){ LSGCChargingETAPillRefresh(); }];
+        LSGCBatteryStateObserver=[nc addObserverForName:UIDeviceBatteryStateDidChangeNotification object:device queue:NSOperationQueue.mainQueue usingBlock:^(__unused NSNotification *n){ LSGCChargingETAPillRefresh(); }];
+        LSGCBatteryObserversInstalled=YES;
+    }
     if (LSGCHooksInstalled) return; LSGCHooksInstalled=YES;
     for (NSString *n in @[@"CSQuickActionsView",@"SBUILockScreenQuickActionsView",@"CSCombinedListView"]) LSGCHookContainerClass(NSClassFromString(n));
 }
-void LSGCChargingETAPillClear(void) { dispatch_async(dispatch_get_main_queue(), ^{ LSGCRemove(); }); }
+void LSGCChargingETAPillClear(void) { dispatch_async(dispatch_get_main_queue(), ^{
+    LSGCRemove();
+    if (LSGCBatteryObserversInstalled) {
+        NSNotificationCenter *nc=NSNotificationCenter.defaultCenter;
+        if (LSGCBatteryLevelObserver) [nc removeObserver:LSGCBatteryLevelObserver];
+        if (LSGCBatteryStateObserver) [nc removeObserver:LSGCBatteryStateObserver];
+        LSGCBatteryLevelObserver=nil; LSGCBatteryStateObserver=nil; LSGCBatteryObserversInstalled=NO;
+    }
+}); }
 void LSGCChargingETAPillRefresh(void) {
     dispatch_async(dispatch_get_main_queue(), ^{
         if (LSGCRefreshing) return; LSGCRefreshing=YES; LSGCInstallContainerHooks();
         @autoreleasepool {
             if (!LSGCOn()) { LSGCRemove(); LSGCRefreshing=NO; return; }
-            UIDevice *d=UIDevice.currentDevice; BOOL charging=d.batteryState==UIDeviceBatteryStateCharging||d.batteryState==UIDeviceBatteryStateFull; BOOL full=d.batteryState==UIDeviceBatteryStateFull;
-            NSString *text=LSGCChargingETAText(charging,NO,0,full); if (!text) { LSGCRemove(); LSGCRefreshing=NO; return; }
+            UIDevice *d=UIDevice.currentDevice;
+            NSString *text=LSGCBatteryText(d.batteryState,d.batteryLevel);
             for (UIWindow *w in LSGCWindows()) {
                 NSMutableArray *containers=[NSMutableArray array]; for (UIView *root in w.subviews) LSGCCollectContainers(root,containers);
                 for (UIView *container in containers) {

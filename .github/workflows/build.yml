@@ -3,7 +3,7 @@ name: Build LockScreenGradientClock
 on:
   workflow_dispatch:
   push:
-    branches: [ main, master, 'fix/wake-flash-safe-2.0.8', 'feature/hide-native-clock-switch', 'feature/charging-eta-pill', 'feature/charging-eta-pill-ios17-compat' ]
+    branches: [ main, master, 'fix/wake-flash-safe-2.0.8', 'feature/hide-native-clock-switch', 'feature/charging-eta-pill', 'feature/charging-eta-pill-ios17-compat', 'feature/charging-pill-battery-percent' ]
 
 jobs:
   build:
@@ -55,6 +55,13 @@ jobs:
           c++ -std=c++17 -Wall -Wextra -Werror tests/wake_strategy_test.cpp -o /tmp/wake_strategy_test
           /tmp/wake_strategy_test
           python3 scripts/verify_wake_strategy.py
+
+      - name: Run battery percentage policy tests
+        run: |
+          set -e
+          c++ -std=c++17 -Wall -Wextra -Werror tests/battery_percent_test.cpp -o /tmp/battery_percent_test
+          /tmp/battery_percent_test
+          python3 scripts/verify_battery_percent.py
 
       - name: Run math tests
         run: |

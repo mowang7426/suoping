@@ -1,7 +1,8 @@
 #import <UIKit/UIKit.h>
 
-// Event-driven lock-screen charging capsule. No ETA is invented when SpringBoard
-// exposes only battery state/level (the public iOS API has no ETA field).
+// Event-driven lock-screen charging capsule. Uses only public UIDevice battery
+// state/level; no ETA, timer, display link, polling, or percentage estimation.
 void LSGCChargingETAPillRefresh(void);
 void LSGCChargingETAPillClear(void);
-NSString *LSGCChargingETAText(BOOL charging, BOOL reliable, NSInteger minutes, BOOL full);
+NSString *LSGCBatteryText(UIDeviceBatteryState state, float level);
+NSInteger LSGCBatteryPercent(float level);
