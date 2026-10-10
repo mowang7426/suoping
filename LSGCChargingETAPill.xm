@@ -1,5 +1,6 @@
 #import "LSGCChargingETAPill.h"
 #import <objc/runtime.h>
+#import <objc/message.h>
 
 static NSString *const LSGCDomain = @"com.minis.lockscreengradientclock";
 static __weak UIView *LSGCPillHost;
@@ -9,19 +10,74 @@ static BOOL LSGCRefreshing;
 static BOOL LSGCHooksInstalled;
 static NSMutableSet *LSGCHookedContainers;
 
+/*
+ * ETA is intentionally a closed-world reader.  The class families below are
+ * the only names observed/mentioned for SpringBoard's battery implementation
+ * in the investigation (SBUIBattery..., SBBattery..., BUICharging...,
+ * BatteryData).  A level, UIDevice, or an arbitrary object is never used.
+ * Selectors are queried dynamically and every returned value passes the
+ * source/key/unit/range gates.  This is a candidate reader, not a claim that
+ * iOS 17.0 exports one of these fields on every device.
+ */
+typedef struct { BOOL charging; BOOL reliable; NSInteger minutes; BOOL full; } LSGCETAResult;
+static BOOL LSGCEtaSourceName(NSString *n) {
+    return [n hasPrefix:@"SBUIBattery"] || [n hasPrefix:@"SBBattery"] ||
+           [n hasPrefix:@"BUICharging"] || [n isEqualToString:@"BatteryData"];
+}
+static id LSGCSafeValue(id object, NSString *key) {
+    if (!object || !key) return nil;
+    @try { return [object valueForKey:key]; } @catch (__unused NSException *e) { return nil; }
+}
+static id LSGCSafeCall(id object, SEL sel) {
+    if (!object || !sel || ![object respondsToSelector:sel]) return nil;
+    @try { return ((id(*)(id,SEL))objc_msgSend)(object,sel); } @catch (__unused NSException *e) { return nil; }
+}
+static BOOL LSGCMinutesFromValue(id value, BOOL seconds, NSInteger *out) {
+    if (!value || !out) return NO;
+    double d=0;
+    if ([value isKindOfClass:NSNumber.class]) d=[value doubleValue];
+    else if ([value isKindOfClass:NSString.class]) {
+        NSString *s=[(NSString *)value stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+        NSScanner *sc=[NSScanner scannerWithString:s]; if (![sc scanDouble:&d] || !sc.isAtEnd) return NO;
+    } else return NO;
+    if (!isfinite(d) || d<0 || d>24.0*60.0*60.0) return NO;
+    NSInteger m=seconds ? (NSInteger)ceil(d/60.0) : (NSInteger)llround(d);
+    if (m<=0 || m>24*60) return NO;
+    *out=m; return YES;
+}
+static LSGCETAResult LSGCReadPrivateETA(void) {
+    LSGCETAResult bad={NO,NO,0,NO};
+    /* No class/selector is linked: absence is a normal iOS 15/17 fallback. */
+    NSArray *classNames=@[@"SBUIBattery",@"SBUIBatteryData",@"SBBattery",@"SBBatteryData",@"BUICharging",@"BUIChargingData",@"BatteryData"];
+    NSArray *accessors=@[@"sharedInstance",@"sharedBatteryData",@"batteryData",@"defaultInstance"];
+    NSArray *minuteKeys=@[@"estimatedTimeRemainingMinutes",@"chargingTimeRemainingMinutes"];
+    NSArray *secondKeys=@[@"estimatedTimeRemaining",@"chargingTimeRemaining",@"batteryTimeRemaining"];
+    for (NSString *cn in classNames) {
+        Class cls=NSClassFromString(cn); if (!cls || !LSGCEtaSourceName(cn)) continue;
+        id source=nil;
+        for (NSString *a in accessors) { source=LSGCSafeCall((id)cls,NSSelectorFromString(a)); if (source) break; }
+        if (!source) source=(id)cls; // class object may itself expose a data key
+        for (NSString *key in minuteKeys) { NSInteger m=0; if (LSGCMinutesFromValue(LSGCSafeValue(source,key),NO,&m)) { LSGCETAResult r={YES,YES,m,NO}; return r; } }
+        for (NSString *key in secondKeys) { NSInteger m=0; if (LSGCMinutesFromValue(LSGCSafeValue(source,key),YES,&m)) { LSGCETAResult r={YES,YES,m,NO}; return r; } }
+        /* Only parse text from a battery ETA-named field, never arbitrary UI. */
+        for (NSString *key in @[@"estimatedTimeRemainingString",@"chargingTimeRemainingString"]) {
+            id v=LSGCSafeValue(source,key); if (![v isKindOfClass:NSString.class]) continue;
+            NSRegularExpression *re=[NSRegularExpression regularExpressionWithPattern:@"([0-9]{1,4})\\s*(?:min|minute|分钟)" options:NSRegularExpressionCaseInsensitive error:NULL];
+            NSTextCheckingResult *x=[re firstMatchInString:v options:0 range:NSMakeRange(0,[(NSString *)v length])];
+            if (x) { NSInteger m=[[(NSString *)v substringWithRange:[x rangeAtIndex:1]] integerValue]; if (m>0&&m<=1440) { LSGCETAResult r={YES,YES,m,NO}; return r; } }
+        }
+    }
+    return bad;
+}
+
 NSString *LSGCChargingETAText(BOOL charging, BOOL reliable, NSInteger minutes, BOOL full) {
     if (!charging) return nil;
     if (full) return @"已充满";
     if (reliable && minutes > 0 && minutes <= 24 * 60) return [NSString stringWithFormat:@"预计还需 %ld 分钟充满", (long)minutes];
     return @"正在充电";
 }
-static BOOL LSGCOn(void) {
-    CFPreferencesAppSynchronize((__bridge CFStringRef)LSGCDomain);
-    id v=CFBridgingRelease(CFPreferencesCopyAppValue(CFSTR("chargingETAPill"), (__bridge CFStringRef)LSGCDomain));
-    return [v respondsToSelector:@selector(boolValue)] && [v boolValue];
-}
-/* iOS 17 changed the concrete classes. Match the complete class chain, never
- * every UIButton/UIControl in SpringBoard. */
+static BOOL LSGCOn(void) { CFPreferencesAppSynchronize((__bridge CFStringRef)LSGCDomain); id v=CFBridgingRelease(CFPreferencesCopyAppValue(CFSTR("chargingETAPill"),(__bridge CFStringRef)LSGCDomain)); return [v respondsToSelector:@selector(boolValue)]&&[v boolValue]; }
+
 static BOOL LSGCClassChainHas(Class cls, NSArray *names) {
     for (Class c=cls;c;c=class_getSuperclass(c)) {
         NSString *n=NSStringFromClass(c);
@@ -100,6 +156,11 @@ static void LSGCHookContainerClass(Class cls) {
 }
 static void LSGCInstallContainerHooks(void) {
     if (LSGCHooksInstalled) return; LSGCHooksInstalled=YES;
+    /* Event-driven only: no timer/display link/polling. UIDevice is used for
+     * state-change notification, never for ETA or percentage estimation. */
+    UIDevice.currentDevice.batteryMonitoringEnabled=YES;
+    [[NSNotificationCenter defaultCenter] addObserverForName:UIDeviceBatteryStateDidChangeNotification object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(__unused NSNotification *n){ LSGCChargingETAPillRefresh(); }];
+    [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(__unused NSNotification *n){ LSGCChargingETAPillRefresh(); }];
     for (NSString *n in @[@"CSQuickActionsView",@"SBUILockScreenQuickActionsView",@"CSCombinedListView"]) LSGCHookContainerClass(NSClassFromString(n));
 }
 void LSGCChargingETAPillClear(void) { dispatch_async(dispatch_get_main_queue(), ^{ LSGCRemove(); }); }
@@ -108,8 +169,13 @@ void LSGCChargingETAPillRefresh(void) {
         if (LSGCRefreshing) return; LSGCRefreshing=YES; LSGCInstallContainerHooks();
         @autoreleasepool {
             if (!LSGCOn()) { LSGCRemove(); LSGCRefreshing=NO; return; }
-            UIDevice *d=UIDevice.currentDevice; BOOL charging=d.batteryState==UIDeviceBatteryStateCharging||d.batteryState==UIDeviceBatteryStateFull; BOOL full=d.batteryState==UIDeviceBatteryStateFull;
-            NSString *text=LSGCChargingETAText(charging,NO,0,full); if (!text) { LSGCRemove(); LSGCRefreshing=NO; return; }
+            UIDevice *d=UIDevice.currentDevice;
+            BOOL charging=d.batteryState==UIDeviceBatteryStateCharging||d.batteryState==UIDeviceBatteryStateFull;
+            BOOL full=d.batteryState==UIDeviceBatteryStateFull;
+            LSGCETAResult eta=LSGCReadPrivateETA();
+            /* UIDevice supplies state only; it is never used to calculate ETA. */
+            if (eta.reliable) { charging=YES; full=NO; }
+            NSString *text=LSGCChargingETAText(charging,eta.reliable,eta.minutes,full); if (!text) { LSGCRemove(); LSGCRefreshing=NO; return; }
             for (UIWindow *w in LSGCWindows()) {
                 NSMutableArray *containers=[NSMutableArray array]; for (UIView *root in w.subviews) LSGCCollectContainers(root,containers);
                 for (UIView *container in containers) {
