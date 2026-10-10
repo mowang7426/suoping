@@ -55,11 +55,6 @@ static void LSGCApplyPrompt(UIView *v, NSString *text) {
     // Hide only the identified text view. Its host and quick-action siblings remain untouched.
     v.alpha=0; v.hidden=YES; st.suppressed=YES;
 }
-static void LSGCPromptTextHook(id self, SEL _cmd, id value) {
-    static void (*orig)(id,SEL,id);
-    // The original is supplied per-class through a block capture below.
-    (void)orig; (void)self; (void)_cmd; (void)value;
-}
 static void LSGCInstallClass(Class cls) {
     if (!cls) return;
     NSArray *allowed=@[@"SBUILockScreenActionButton",@"SBUILockScreenUnlockButton",@"SBUIUnlockLabel",@"SBUILockScreenInstructionLabel",@"SBLockScreenBatteryChargingView",@"SBUILockScreenBatteryChargingView",@"SBUIChargingStatusLabel",@"SBLockScreenBatteryTextView"];
