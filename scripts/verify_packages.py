@@ -23,7 +23,7 @@ def verify(path):
         assert plistlib.loads(read(injection+'.plist'))['Filter']['Bundles']==['com.apple.springboard']
         dylib=read(injection+'.dylib')
         assert len(dylib)>4096
-        for marker in [b'_UIAnimatingLabel', b'CSProminentTimeView', b'SBFLockScreenDateView', b'[LSGC] constructor initialized', b'alpha-zero-wrapper-sibling', b'2.0.14-charging-eta-pill', b'LSGC.ClockOutline', b'clockEdgeWidth', b'clockWeight', b'sibling-wrapper-alpha-not-zero', b'unsupported-host-layer-mask:']:
+        for marker in [b'_UIAnimatingLabel', b'CSProminentTimeView', b'SBFLockScreenDateView', b'[LSGC] constructor initialized', b'alpha-zero-wrapper-sibling', b'2.0.15-charging-eta-pill-ios17-compat', b'LSGC.ClockOutline', b'clockEdgeWidth', b'clockWeight', b'sibling-wrapper-alpha-not-zero', b'unsupported-host-layer-mask:']:
             assert marker in dylib, f'missing standalone entry/clock marker: {marker!r}'
         entry = plistlib.loads(read(ENTRY))['entry']
         assert entry['bundle'] == 'LockScreenGradientClockPrefs'
