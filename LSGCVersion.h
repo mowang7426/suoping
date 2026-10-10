@@ -1,2 +1,2 @@
 #pragma once
-#define LSGCVersionString @"2.0.14-charging-eta-pill"
+#define LSGCVersionString @"2.0.15-charging-eta-pill-ios17-compat"
