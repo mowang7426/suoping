@@ -23,8 +23,8 @@ assert 'IsStandaloneTimeLabel(label) ? Clamp([Config[@"clockOffsetY"]' in source
 assert 'CGFloat sy=frame.size.height/label.bounds.size.height*userScale*heightScale' in source
 assert 'clockHeight' not in source[source.index('static NSString *DateSignature'):source.index('static void Apply')]
 assert 'LSGCLabeledSliderCell.class' in (root/'Preferences/LSGCRootListController.m').read_text()
-assert (root/'control').read_text().split('Version: ',1)[1].splitlines()[0] == '2.0.17'
-assert '#define LSGCVersionString @"2.0.17-charging-pill-battery-level"' in (root/'LSGCVersion.h').read_text()
+assert (root/'control').read_text().split('Version: ',1)[1].splitlines()[0] == '2.0.18'
+assert '#define LSGCVersionString @"2.0.18-hide-lockscreen-prompts"' in (root/'LSGCVersion.h').read_text()
 # Event-driven clock geometry and process-local imported fonts.
 font=(root/'LSGCFont.h').read_text()
 prefs=(root/'Preferences/LSGCRootListController.m').read_text()

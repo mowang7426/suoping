@@ -42,6 +42,14 @@
 		</dict>
 		<dict>
 			<key>cell</key><string>PSSwitchCell</string>
+			<key>label</key><string>隐藏系统锁屏提示文字</string>
+			<key>key</key><string>hideLockScreenPrompts</string>
+			<key>default</key><false/>
+			<key>defaults</key><string>com.minis.lockscreengradientclock</string>
+			<key>footerText</key><string>打开后仅隐藏已严格识别的系统“向上滑动解锁”和充电“目前电量……”提示文字；不会隐藏日期、农历、主时间、通知时间、充电胶囊或手电筒/相机按钮。无法确认层级时安全不隐藏。</string>
+		</dict>
+		<dict>
+			<key>cell</key><string>PSSwitchCell</string>
 			<key>label</key><string>锁屏充电剩余时间胶囊</string>
 			<key>key</key><string>chargingETAPill</string>
 			<key>default</key><false/>

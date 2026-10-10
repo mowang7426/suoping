@@ -1,2 +1,2 @@
 #pragma once
-#define LSGCVersionString @"2.0.17-charging-pill-battery-level"
+#define LSGCVersionString @"2.0.18-hide-lockscreen-prompts"
