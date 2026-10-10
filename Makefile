@@ -6,7 +6,7 @@ INSTALL_TARGET_PROCESSES = SpringBoard
 include $(THEOS)/makefiles/common.mk
 
 TWEAK_NAME = LockScreenGradientClock
-LockScreenGradientClock_FILES = Tweak.xm
+LockScreenGradientClock_FILES = Tweak.xm LSGCChargingETAPill.xm
 LockScreenGradientClock_CFLAGS = -fobjc-arc
 LockScreenGradientClock_FRAMEWORKS = UIKit QuartzCore CoreGraphics CoreFoundation CoreText
 LockScreenGradientClock_LIBRARIES = substrate

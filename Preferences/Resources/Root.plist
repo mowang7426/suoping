@@ -41,6 +41,14 @@
 			<string>打开后仅抑制已严格识别的原生主时间字形；自定义渲染失败时可能无时间。关闭或关闭主开关后恢复系统时间。日期与农历不受影响。</string>
 		</dict>
 		<dict>
+			<key>cell</key><string>PSSwitchCell</string>
+			<key>label</key><string>锁屏充电剩余时间胶囊</string>
+			<key>key</key><string>chargingETAPill</string>
+			<key>default</key><false/>
+			<key>defaults</key><string>com.minis.lockscreengradientclock</string>
+			<key>footerText</key><string>仅在锁屏底部手电筒与相机之间显示；仅充电时显示。系统没有可验证的剩余时间时显示“正在充电”，不会猜测分钟数。</string>
+		</dict>
+		<dict>
 			<key>cell</key>
 			<string>PSSwitchCell</string>
 			<key>label</key>

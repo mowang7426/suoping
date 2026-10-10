@@ -15,6 +15,7 @@
 #import "LSGCClockScope.h"
 #import "LSGCClockRender.h"
 #import "LSGCWakeStrategy.h"
+#import "LSGCChargingETAPill.h"
 
 // An optional companion: never patch, replace or distribute Liquidify binaries.
 extern "C" void MSHookMessageEx(Class, SEL, IMP, IMP *);
@@ -137,7 +138,7 @@ static CGFloat Clamp(CGFloat x, CGFloat lo, CGFloat hi) {
 }
 static void LoadConfig(void) {
     CFPreferencesAppSynchronize((__bridge CFStringRef)Domain);
-    NSMutableDictionary *values=[@{@"enabled":@YES,@"color1":@"#39D6ED",@"color2":@"#4D7CFF",@"color3":@"#AD4DF5",@"color4":@"#F950B0",@"color5":@"#FFBD61",@"direction":@0,@"opacity":@0.65,@"animate":@NO,@"strictScope":@YES,@"maskMode":@0,@"glassBlend":@YES,@"glassTint":@0.32,@"edgeEnabled":@NO,@"edgePalette":@0,@"edgeCore":@0.22,@"edgeStrength":@0.65,@"edgeWidth":@1.5,@"edgeHighlight":@0.35,@"edgeReveal":@NO,@"customAngleEnabled":@NO,@"gradientAngle":@0,@"customStopsEnabled":@NO,@"stop1":@0,@"stop2":@0.25,@"stop3":@0.5,@"stop4":@0.75,@"stop5":@1,@"reverseColors":@NO,@"independentEdges":@NO,@"edgeColor1":@"#D0FAFF",@"edgeColor2":@"#B39CFF",@"edgeColor3":@"#F7A9DD",@"timeShift":@NO,@"parallaxAngle":@NO,@"scheduleEnabled":@NO,@"hideNativeClock":@NO} mutableCopy];
+    NSMutableDictionary *values=[@{@"enabled":@YES,@"color1":@"#39D6ED",@"color2":@"#4D7CFF",@"color3":@"#AD4DF5",@"color4":@"#F950B0",@"color5":@"#FFBD61",@"direction":@0,@"opacity":@0.65,@"animate":@NO,@"strictScope":@YES,@"maskMode":@0,@"glassBlend":@YES,@"glassTint":@0.32,@"edgeEnabled":@NO,@"edgePalette":@0,@"edgeCore":@0.22,@"edgeStrength":@0.65,@"edgeWidth":@1.5,@"edgeHighlight":@0.35,@"edgeReveal":@NO,@"customAngleEnabled":@NO,@"gradientAngle":@0,@"customStopsEnabled":@NO,@"stop1":@0,@"stop2":@0.25,@"stop3":@0.5,@"stop4":@0.75,@"stop5":@1,@"reverseColors":@NO,@"independentEdges":@NO,@"edgeColor1":@"#D0FAFF",@"edgeColor2":@"#B39CFF",@"edgeColor3":@"#F7A9DD",@"timeShift":@NO,@"parallaxAngle":@NO,@"scheduleEnabled":@NO,@"hideNativeClock":@NO,@"chargingETAPill":@NO} mutableCopy];
     // Standalone native lock-screen clock mode: no Liquidify object is required.
     values[@"dateGradient"]=@YES;
     values[@"clockScale"]=@2.35;
@@ -1399,6 +1400,8 @@ static void Discover(void) {
 static void DiscoverAndApply(void) {
     Discover();
     for (UILabel *label in Labels.allObjects) Schedule(label);
+    if ([Config[@"chargingETAPill"] boolValue]) LSGCChargingETAPillRefresh();
+    else LSGCChargingETAPillClear();
 }
 static void RetryDateDiscover(void) {
     // Date success must never cancel the remaining bounded clock retries.
@@ -1650,8 +1653,11 @@ __attribute__((constructor)) static void Start(void) {
             _dyld_register_func_for_add_image(AddedImage);
             DiscoverAndApply();
             NSNotificationCenter *notes=NSNotificationCenter.defaultCenter;
+            UIDevice.currentDevice.batteryMonitoringEnabled=YES;
             NSOperationQueue *queue=NSOperationQueue.mainQueue;
             void (^refresh)(NSNotification *)=^(NSNotification *note) { (void)note; MaybeApplySchedule(YES); DiscoverAndApply(); };
+            [notes addObserverForName:UIDeviceBatteryStateDidChangeNotification object:nil queue:queue usingBlock:refresh];
+            [notes addObserverForName:UIDeviceBatteryLevelDidChangeNotification object:nil queue:queue usingBlock:refresh];
             [notes addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:queue usingBlock:refresh];
             [notes addObserverForName:UIApplicationDidFinishLaunchingNotification object:nil queue:queue usingBlock:refresh];
             [notes addObserverForName:UIApplicationWillEnterForegroundNotification object:nil queue:queue usingBlock:refresh];
