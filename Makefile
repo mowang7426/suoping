@@ -8,6 +8,7 @@ include $(THEOS)/makefiles/common.mk
 TWEAK_NAME = LockScreenGradientClock
 LockScreenGradientClock_FILES = Tweak.xm LSGCChargingETAPill.xm LSGCHideSystemPrompts.xm
 LockScreenGradientClock_CFLAGS = -fobjc-arc
+LSGCChargingETAPill.xm_CFLAGS = -std=c++17
 LSGCHideSystemPrompts.xm_CFLAGS = -std=c++17
 LockScreenGradientClock_FRAMEWORKS = UIKit QuartzCore CoreGraphics CoreFoundation CoreText
 LockScreenGradientClock_LIBRARIES = substrate

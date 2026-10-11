@@ -1411,7 +1411,7 @@ static void Discover(void) {
 static void DiscoverAndApply(void) {
     Discover();
     for (UILabel *label in Labels.allObjects) Schedule(label);
-    if ([Config[@"chargingETAPill"] boolValue]) LSGCChargingETAPillRefresh();
+    if ([Config[@"enabled"] boolValue] && [Config[@"chargingETAPill"] boolValue]) LSGCChargingETAPillRefresh();
     else LSGCChargingETAPillClear();
 }
 static void RetryDateDiscover(void) {

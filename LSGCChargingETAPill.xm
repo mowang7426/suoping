@@ -1,11 +1,13 @@
 #import "LSGCChargingETAPill.h"
 #import <objc/runtime.h>
+#import "LSGCChargingPillPolicy.h"
 
 static NSString *const LSGCDomain = @"com.minis.lockscreengradientclock";
 static __weak UIView *LSGCPillHost;
 static __weak UIView *LSGCPill;
 static NSString *LSGCLastText;
 static BOOL LSGCRefreshing;
+static LSGCPillQueue LSGCQueue;
 static BOOL LSGCHooksInstalled;
 static BOOL LSGCBatteryObserversInstalled;
 static id LSGCBatteryLevelObserver;
@@ -30,7 +32,8 @@ NSInteger LSGCBatteryPercent(float level) {
 static BOOL LSGCOn(void) {
     CFPreferencesAppSynchronize((__bridge CFStringRef)LSGCDomain);
     id v=CFBridgingRelease(CFPreferencesCopyAppValue(CFSTR("chargingETAPill"), (__bridge CFStringRef)LSGCDomain));
-    return [v respondsToSelector:@selector(boolValue)] && [v boolValue];
+    id enabled=CFBridgingRelease(CFPreferencesCopyAppValue(CFSTR("enabled"), (__bridge CFStringRef)LSGCDomain));
+    return (!enabled || [enabled boolValue]) && [v respondsToSelector:@selector(boolValue)] && [v boolValue];
 }
 /* iOS 17 changed the concrete classes. Match the complete class chain, never
  * every UIButton/UIControl in SpringBoard. */
@@ -42,6 +45,7 @@ static BOOL LSGCClassChainHas(Class cls, NSArray *names) {
     return NO;
 }
 static BOOL LSGCLockContainer(UIView *v) {
+    for (UIView *a=v; a; a=a.superview) if (a.hidden || a.alpha<=0.01) return NO;
     return v && v.window && LSGCClassChainHas(v.class,@[@"CSQuickActionsView",@"SBUILockScreenQuickActionsView",@"CSCombinedListView"]);
 }
 static NSString *LSGCButtonWords(UIView *v) {
@@ -77,7 +81,7 @@ static UIView *LSGCCommonHost(UIView *a, UIView *b) {
     for (UIView *x=a;x;x=x.superview) for (UIView *y=b;y;y=y.superview) if (x==y) return x;
     return nil;
 }
-static void LSGCRemove(void) { [LSGCPill removeFromSuperview]; LSGCPill=nil; LSGCPillHost=nil; LSGCLastText=nil; }
+static void LSGCRemove(void) { LSGCQueue.clear(); [LSGCPill removeFromSuperview]; LSGCPill=nil; LSGCPillHost=nil; LSGCLastText=nil; }
 static NSArray<UIWindow *> *LSGCWindows(void) {
     NSMutableArray *r=[NSMutableArray array];
     for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) if ([scene isKindOfClass:UIWindowScene.class]) [r addObjectsFromArray:((UIWindowScene *)scene).windows];
@@ -92,7 +96,7 @@ static void LSGCCollectContainers(UIView *v, NSMutableArray *out) {
     if (LSGCLockContainer(v)) [out addObject:v];
     for (UIView *x in v.subviews) LSGCCollectContainers(x,out);
 }
-static void LSGCRefreshSoon(void) { dispatch_async(dispatch_get_main_queue(), ^{ LSGCChargingETAPillRefresh(); }); }
+static void LSGCRefreshSoon(void) { LSGCChargingETAPillRefresh(); }
 static void LSGCHookContainerClass(Class cls) {
     if (!cls || !LSGCClassChainHas(cls,@[@"CSQuickActionsView",@"SBUILockScreenQuickActionsView",@"CSCombinedListView"])) return;
     if (!LSGCHookedContainers) LSGCHookedContainers=[NSMutableSet set];
@@ -105,7 +109,7 @@ static void LSGCHookContainerClass(Class cls) {
             void (^block)(UIView *)=^(UIView *self){ ((void(*)(id,SEL))old)(self,sel); LSGCRefreshSoon(); };
             class_replaceMethod(cls,sel,imp_implementationWithBlock(block),method_getTypeEncoding(m));
         } else {
-            void (^block)(UIView *,UIWindow *)=^(UIView *self,UIWindow *window){ ((void(*)(id,SEL,UIWindow *))old)(self,sel,window); LSGCRefreshSoon(); };
+            void (^block)(UIView *)=^(UIView *self){ ((void(*)(id,SEL))old)(self,sel); LSGCRefreshSoon(); };
             class_replaceMethod(cls,sel,imp_implementationWithBlock(block),method_getTypeEncoding(m));
         }
     }
@@ -122,7 +126,11 @@ static void LSGCInstallContainerHooks(void) {
     if (LSGCHooksInstalled) return; LSGCHooksInstalled=YES;
     for (NSString *n in @[@"CSQuickActionsView",@"SBUILockScreenQuickActionsView",@"CSCombinedListView"]) LSGCHookContainerClass(NSClassFromString(n));
 }
-void LSGCChargingETAPillClear(void) { dispatch_async(dispatch_get_main_queue(), ^{
+static void LSGCOnMain(dispatch_block_t block) {
+    if (NSThread.isMainThread) block();
+    else dispatch_async(dispatch_get_main_queue(), block);
+}
+void LSGCChargingETAPillClear(void) { LSGCOnMain(^{
     LSGCRemove();
     if (LSGCBatteryObserversInstalled) {
         NSNotificationCenter *nc=NSNotificationCenter.defaultCenter;
@@ -131,13 +139,32 @@ void LSGCChargingETAPillClear(void) { dispatch_async(dispatch_get_main_queue(), 
         LSGCBatteryLevelObserver=nil; LSGCBatteryStateObserver=nil; LSGCBatteryObserversInstalled=NO;
     }
 }); }
+static BOOL LSGCHasVisibleContainer(void) {
+    for (UIWindow *w in LSGCWindows()) {
+        NSMutableArray *containers=[NSMutableArray array];
+        LSGCCollectContainers(w,containers);
+        if (containers.count) return YES;
+    }
+    return NO;
+}
 void LSGCChargingETAPillRefresh(void) {
-    dispatch_async(dispatch_get_main_queue(), ^{
-        if (LSGCRefreshing) return; LSGCRefreshing=YES; LSGCInstallContainerHooks();
+    LSGCOnMain(^{
+        if (!LSGCOn()) { LSGCChargingETAPillClear(); return; }
+        LSGCInstallContainerHooks();
+        // Negative events remove the WHOLE capsule now, before any queued work.
+        if (!LSGCPillAllowed(true,true,(int)UIDevice.currentDevice.batteryState) || !LSGCHasVisibleContainer()) { LSGCRemove(); return; }
+        uint64_t ticket;
+        if (!LSGCQueue.enqueue(ticket)) return;
+        dispatch_async(dispatch_get_main_queue(), ^{
+        if (!LSGCQueue.consume(ticket)) return;
+        if (LSGCRefreshing) return;
+        LSGCRefreshing=YES;
         @autoreleasepool {
-            if (!LSGCOn()) { LSGCRemove(); LSGCRefreshing=NO; return; }
+            // Never capture battery state/text in the enqueuing callback.
+            if (!LSGCOn()) { LSGCChargingETAPillClear(); LSGCRefreshing=NO; return; }
             UIDevice *d=UIDevice.currentDevice;
             NSString *text=LSGCBatteryText(d.batteryState,d.batteryLevel);
+            if (!LSGCPillAllowed(true,true,(int)d.batteryState) || !text.length) { LSGCRemove(); LSGCRefreshing=NO; return; }
             for (UIWindow *w in LSGCWindows()) {
                 NSMutableArray *containers=[NSMutableArray array]; for (UIView *root in w.subviews) LSGCCollectContainers(root,containers);
                 for (UIView *container in containers) {
@@ -152,12 +179,14 @@ void LSGCChargingETAPillRefresh(void) {
                     CGFloat width=MIN(220.0,MAX(100.0,gap-8)),height=30; CGRect r=CGRectMake(CGRectGetMaxX(fr)+(gap-width)/2,CGRectGetMidY(fr)-height/2,width,height);
                     if (CGRectIntersectsRect(r,fr)||CGRectIntersectsRect(r,cr)) continue;
                     if (LSGCPillHost!=host) { LSGCRemove(); LSGCPillHost=host; }
-                    if (!LSGCPill) { UIView *pill=[[UIView alloc] initWithFrame:r]; pill.backgroundColor=[UIColor colorWithWhite:0 alpha:.42]; pill.layer.cornerRadius=15; pill.userInteractionEnabled=NO; UIImageView *bolt=[[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"bolt.fill"]]; bolt.tintColor=UIColor.whiteColor; bolt.frame=CGRectMake(8,7,16,16); [pill addSubview:bolt]; UILabel *label=[[UILabel alloc] initWithFrame:CGRectMake(27,0,width-31,height)]; label.tag=7001; label.textColor=UIColor.whiteColor; label.font=[UIFont systemFontOfSize:12 weight:UIFontWeightSemibold]; label.adjustsFontSizeToFitWidth=YES; label.minimumScaleFactor=.7; label.textAlignment=NSTextAlignmentCenter; [pill addSubview:label]; [host addSubview:pill]; LSGCPill=pill; }
-                    LSGCPill.frame=r; UILabel *label=(UILabel *)[LSGCPill viewWithTag:7001]; if (![LSGCLastText isEqualToString:text]) { LSGCLastText=[text copy]; label.text=text; } LSGCRefreshing=NO; return;
+                    BOOL newLabel=!LSGCPill;
+                    if (!LSGCPill) { UIView *pill=[[UIView alloc] initWithFrame:r]; pill.backgroundColor=[UIColor colorWithWhite:0 alpha:.42]; pill.layer.cornerRadius=15; pill.userInteractionEnabled=NO; UIImageView *bolt=[[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"bolt.fill"]]; bolt.tintColor=UIColor.whiteColor; bolt.frame=CGRectMake(8,7,16,16); [pill addSubview:bolt]; UILabel *label=[[UILabel alloc] initWithFrame:CGRectMake(27,0,width-31,height)]; label.tag=7001; label.textColor=UIColor.whiteColor; label.font=[UIFont systemFontOfSize:12 weight:UIFontWeightSemibold]; label.adjustsFontSizeToFitWidth=YES; label.minimumScaleFactor=.7; label.textAlignment=NSTextAlignmentCenter; [pill addSubview:label]; label.text=text; [host addSubview:pill]; LSGCPill=pill; }
+                    LSGCPill.frame=r; UILabel *label=(UILabel *)[LSGCPill viewWithTag:7001]; if (LSGCPillNeedsText(newLabel,[LSGCLastText isEqualToString:text],[label.text isEqualToString:text])) { LSGCLastText=[text copy]; label.text=text; } LSGCRefreshing=NO; return;
                 }
             }
             LSGCRemove();
         }
         LSGCRefreshing=NO;
+        });
     });
 }
