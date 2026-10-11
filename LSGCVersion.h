@@ -1,2 +1,2 @@
 #pragma once
-#define LSGCVersionString @"2.0.18-hide-lockscreen-prompts"
+#define LSGCVersionString @"2.0.19-hide-charging-prompt-ios17"

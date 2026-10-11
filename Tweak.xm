@@ -163,6 +163,7 @@ static void LoadConfig(void) {
         if (value) values[key]=value;
     }
     Config=values; Revision++; RegisterUserFont();
+    LSGCHideSystemPromptsRefresh([Config[@"enabled"] boolValue],[Config[@"hideLockScreenPrompts"] boolValue]);
 }
 static UIColor *Color(id input, UIColor *fallback) {
     if (![input isKindOfClass:NSString.class]) return fallback;
@@ -329,6 +330,7 @@ static BOOL ClockHostVisible(UILabel *label, LSGCState *s) {
     return effectiveOpacity*s.gradient.opacity>=0.01;
 }
 static UIView *DateOverlayParent(UILabel *label) {
+    if (LSGCSystemPromptRecognized(label)) return nil;
     // A sibling of the actual time label inherits every native ancestor
     // transform/animation (notification reflow, swipe and clock shrink).
     // Do not move time out of its animated hierarchy as we do for date vibrancy.
@@ -920,6 +922,7 @@ static void Apply(UILabel *label) {
     BOOL visualChanged=NO;
     DiagInc(&DiagApply); DiagApplyReturn=@"entered";
     if (!NSThread.isMainThread) { DiagApplyReturn=@"not-main-thread"; return; }
+    if (LSGCSystemPromptRecognized(label)) { RemoveOverlay(label); DiagApplyReturn=@"system-prompt-not-date"; return; }
     [Labels addObject:label];
     BOOL isGlassLabel=GlassClass && [label isKindOfClass:GlassClass];
     BOOL clock=IsStandaloneTimeLabel(label);
@@ -1212,6 +1215,7 @@ static void LabelDraw(id obj,SEL sel,CGRect rect) {
     if (main) DiagInc(&DiagMainDraw);
     ++DiagDrawDepth;
     @try {
+        if (!Rendering && LSGCSystemPromptShouldSuppress((UILabel *)obj)) return;
         if (!Rendering && NativeClockSuppressionEnabled() && IsStandaloneTimeLabel((UILabel *)obj)) {
             if (main) DiagInc(&DiagSuppress);
             return;
@@ -1226,10 +1230,14 @@ static void (*OrigLabelMove)(id,SEL);
 static void (*OrigLabelText)(id,SEL,id);
 static void (*OrigLabelAttributed)(id,SEL,id);
 static void LabelLayout(id obj,SEL sel) {
-    DiagInc(&DiagLayout); OrigLabelLayout(obj,sel); Schedule((UILabel *)obj);
+    DiagInc(&DiagLayout); OrigLabelLayout(obj,sel);
+    if (!Rendering) LSGCSystemPromptObserve((UILabel *)obj);
+    Schedule((UILabel *)obj);
 }
 static void LabelMove(id obj,SEL sel) {
-    DiagInc(&DiagMove); OrigLabelMove(obj,sel); Schedule((UILabel *)obj);
+    DiagInc(&DiagMove); OrigLabelMove(obj,sel);
+    if (!Rendering) LSGCSystemPromptObserve((UILabel *)obj);
+    Schedule((UILabel *)obj);
 }
 static void InvalidateClockResource(UILabel *label) {
     if (!IsStandaloneTimeLabel(label)) return;
@@ -1264,7 +1272,7 @@ static void LabelText(id obj,SEL sel,id value) {
         BOOL changed=!((before==label.text) || [before isEqualToString:label.text]);
         if (guarded) EndSetter(label);
         if (outer && changed) InvalidateClockResource(label);
-        if (outer) Schedule(label);
+        if (outer) { if (!Rendering) LSGCSystemPromptObserve(label); Schedule(label); }
     }
 }
 static void LabelAttributed(id obj,SEL sel,id value) {
@@ -1275,7 +1283,7 @@ static void LabelAttributed(id obj,SEL sel,id value) {
         BOOL changed=!((before==label.attributedText) || [before isEqualToAttributedString:label.attributedText]);
         if (guarded) EndSetter(label);
         if (outer && changed) InvalidateClockResource(label);
-        if (outer) Schedule(label);
+        if (outer) { if (!Rendering) LSGCSystemPromptObserve(label); Schedule(label); }
     }
 }
 static void InstallLabelHooks(void) {
@@ -1326,7 +1334,7 @@ static void InstallClockHooks(void) {
             __block IMP original=NULL;
             void (^refresh)(id)=^(id obj) {
                 if (Rendering || !NSThread.isMainThread) return;
-                if (labelClass) { Schedule((UILabel *)obj); return; }
+                if (labelClass) { LSGCSystemPromptObserve((UILabel *)obj); Schedule((UILabel *)obj); return; }
                 // Discover NEW labels in this local subtree, not only the labels
                 // captured at SpringBoard startup. No global traversal per tick.
                 Walk((UIView *)obj,0);
@@ -1343,7 +1351,7 @@ static void InstallClockHooks(void) {
                                         (beforeAttributed==label.attributedText || [beforeAttributed isEqual:label.attributedText]));
                         if (guarded) EndSetter(label);
                         if (outer && changed) InvalidateClockResource(label);
-                        if (outer) Schedule(label);
+                        if (outer) { if (!Rendering) LSGCSystemPromptObserve(label); Schedule(label); }
                     }
                 });
             } else if ([method isEqualToString:@"drawTextInRect:"]) {
@@ -1353,6 +1361,7 @@ static void InstallClockHooks(void) {
                     if (main) DiagInc(&DiagMainDraw);
                     ++DiagDrawDepth;
                     @try {
+                        if (!Rendering && LSGCSystemPromptShouldSuppress((UILabel *)obj)) return;
                         if (!Rendering && NativeClockSuppressionEnabled() && IsStandaloneTimeLabel((UILabel *)obj)) {
                             if (main) DiagInc(&DiagSuppress);
                             return;
@@ -1379,6 +1388,7 @@ static void Walk(UIView *view,NSUInteger depth) {
     if (InLockScreen(view) && [NSStringFromClass(view.class) containsString:@"Date"]) [DateViews addObject:view];
     if ([view isKindOfClass:UILabel.class]) {
         UILabel *label=(UILabel *)view;
+        if (!Rendering) LSGCSystemPromptObserve(label);
         BOOL clock=IsStandaloneTimeLabel(label);
         BOOL date=!clock && DateOverlayParent(label)!=nil;
         if (clock || date) { [Labels addObject:label]; Schedule(label); }
@@ -1625,7 +1635,7 @@ static void Notification(CFNotificationCenterRef center,void *observer,CFStringR
     dispatch_async(dispatch_get_main_queue(), ^{
         if (diagnostic) { WriteDiagnostics(); return; }
         if (sample) { SampleWallpaper(); return; }
-        LoadConfig(); RefreshNativeClockSuppression(); LSGCHideSystemPromptsRefresh(); MaybeApplySchedule(YES); DiscoverAndApply();
+        LoadConfig(); RefreshNativeClockSuppression(); MaybeApplySchedule(YES); DiscoverAndApply();
     });
 }
 static void AddedImage(const struct mach_header *header,intptr_t slide) {
