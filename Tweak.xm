@@ -993,6 +993,7 @@ static void Apply(UILabel *label) {
         RemoveOverlay(label); DiagApplyReturn=@"date-disabled"; return;
     }
     if (!clock) [DateOverlayLabels addObject:label];
+    else [DateOverlayLabels removeObject:label]; // A reused source must not register a new main-clock overlay as date.
     LSGCState *clockState=objc_getAssociatedObject(label,&StateKey);
     if (clock && !clockState) {
         clockState=[LSGCState new]; clockState.gradient=[CAGradientLayer layer]; clockState.mask=[CALayer layer];

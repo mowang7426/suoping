@@ -22,5 +22,7 @@ for start,end in [('static void LabelDraw(', 'static void (*OrigLabelLayout)'), 
     body=t[t.index(start):t.index(end,t.index(start))]
     assert 'Schedule(' not in body and 'Apply(' not in body and 'setNeedsDisplay' not in body
 assert 'CADisplayLink' not in t and 'scheduledTimer' not in t
+assert 'Tweak.xm_CFLAGS = -std=c++17' in (r/'Makefile').read_text()
+assert 'else [DateOverlayLabels removeObject:label]' in t
 assert (r/'tests/native_date_lunar_test.cpp').exists()
 print('PASS native date/lunar integration: shared production policies, real iOS17 chain, backing reset, draw purity, full registered overlay purge')

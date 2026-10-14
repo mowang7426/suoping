@@ -1,6 +1,7 @@
 #pragma once
 #include <string>
 #include <vector>
+#include <initializer_list>
 
 // Pure policy contract for the native lock-screen date/lunar leaf gate.
 namespace LSGCNativeDateLunar {
