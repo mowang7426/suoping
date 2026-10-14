@@ -44,6 +44,10 @@ def verify(path):
         assert '彩边' not in str(root), 'obsolete date edge explanation shipped'
         for key in ['color1','color2','color3','color4','color5','clockOpacity','clockWeight','clockEdgeColor','clockEdgeEnabled','clockEdgeWidth','clockEdgeStrength']:
             assert key in settings, f'missing shared palette/independent ink setting: {key}'
+        assert settings['hideNativeDateLunar']['default'] is False
+        assert settings['hideNativeDateLunar']['label']=='隐藏原生日期和农历'
+        for marker in [b'hideNativeDateLunar', b'CSProminentSubtitleDateView']:
+            assert marker in dylib, f'missing native date implementation marker: {marker!r}'
         assert subprocess.check_output(['dpkg-deb','-f',str(path),'Version'],text=True).strip()=='2.0.21'
         assert len(read(BUNDLE + info['CFBundleExecutable'])) > 0
     print(f'PASS {path}: preference entry, controller binary and resources present')

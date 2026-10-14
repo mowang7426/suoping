@@ -31,6 +31,8 @@ static CGFloat ParallaxDegrees;
 static CFTimeInterval ParallaxStamp;
 static NSDictionary *Config;
 static NSHashTable<UILabel *> *Labels;
+static NSHashTable<UILabel *> *NativeDateLabels;
+static NSHashTable<UILabel *> *DateOverlayLabels;
 static NSHashTable<UIView *> *DateViews;
 static Class GlassClass;
 static BOOL Hooked;
@@ -52,6 +54,7 @@ static void RefreshNativeClockSuppression(void);
 static BOOL IsStandaloneTimeLabel(UILabel *label);
 static BOOL NativeDateLunarSuppressionEnabled(void);
 static void RefreshNativeDateLunarSuppression(void);
+static void PurgeDisabledDateOverlays(void);
 static void ObserveNativeDateLunar(UILabel *label);
 static BOOL ClockReplacementReady(UILabel *label);
 static BOOL ClockReplacementReadyForCommit(UILabel *label);
@@ -170,6 +173,7 @@ static void LoadConfig(void) {
     }
     Config=values; Revision++; RegisterUserFont();
     LSGCHideSystemPromptsRefresh([Config[@"enabled"] boolValue],[Config[@"hideLockScreenPrompts"] boolValue]);
+    PurgeDisabledDateOverlays();
     RefreshNativeDateLunarSuppression();
 }
 static UIColor *Color(id input, UIColor *fallback) {
@@ -214,28 +218,33 @@ static BOOL NativeDateLunarSuppressionEnabled(void) {
 }
 static BOOL IsNativeDateLunarLeaf(UILabel *label) {
     if (!label || label.subviews.count!=0 || !label.window || label.tag==7001 || IsStandaloneTimeLabel(label)) return NO;
-    NSMutableArray *chain=[NSMutableArray array];
-    BOOL dateView=NO, verified=NO, forbidden=NO;
-    for (UIView *v=label; v; v=v.superview) {
-        NSString *name=NSStringFromClass(v.class); [chain addObject:name];
-        if ([name isEqualToString:@"SBFLockScreenDateView"]) dateView=YES;
-        if ([name isEqualToString:@"SBFLockScreenDateSubtitleDateView"] ||
-            [name isEqualToString:@"SBFLockScreenAlternateDateLabel"] ||
-            [name isEqualToString:@"SBUILegibilityLabel"]) verified=YES;
-        if ([name isEqualToString:@"BSUIRelativeDateLabel"]) forbidden=YES;
-    }
+    std::vector<std::string> chain;
+    for (UIView *v=label; v; v=v.superview)
+        chain.emplace_back(NSStringFromClass(v.class).UTF8String ?: "");
     NSString *text=label.text ?: label.attributedText.string ?: @"";
-    std::vector<std::string> c; for (NSString *name in chain) c.emplace_back(name.UTF8String ?: "");
-    LSGCNativeDateLunar::Input input{std::string(text.UTF8String ?: ""),c,true,true,(int)label.tag};
-    return dateView && verified && !forbidden && LSGCNativeDateLunar::identify(input);
+    LSGCNativeDateLunar::Input input{std::string(text.UTF8String ?: ""),chain,true,true,(int)label.tag};
+    return LSGCNativeDateLunar::identify(input);
+}
+static BOOL ShouldSuppressNativeDateLunar(UILabel *label) {
+    return LSGCNativeDateLunar::suppress([Config[@"enabled"] boolValue],
+        [Config[@"hideNativeDateLunar"] boolValue],Rendering,
+        !Rendering && IsNativeDateLunarLeaf(label));
 }
 static char NativeDateLunarStateKey;
 static void ObserveNativeDateLunar(UILabel *label) {
-    if (!label || !NSThread.isMainThread) return;
-    BOOL next=NativeDateLunarSuppressionEnabled() && IsNativeDateLunarLeaf(label);
+    if (!label || Rendering || !NSThread.isMainThread) return;
+    BOOL identified=IsNativeDateLunarLeaf(label);
     NSNumber *old=objc_getAssociatedObject(label,&NativeDateLunarStateKey);
-    if (!old || old.boolValue!=next) {
-        objc_setAssociatedObject(label,&NativeDateLunarStateKey,@(next),OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (identified) [NativeDateLabels addObject:label];
+    if (!identified && !old) return;
+    BOOL next=LSGCNativeDateLunar::suppress([Config[@"enabled"] boolValue],
+        [Config[@"hideNativeDateLunar"] boolValue],false,identified);
+    auto change=LSGCNativeDateLunar::transition(old!=nil,old.boolValue,next);
+    objc_setAssociatedObject(label,&NativeDateLunarStateKey,@(change.suppressed),OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (change.invalidate) {
+        // Both ON and OFF clear old glyph pixels, then request one recovery draw.
+        // Never touch alpha/hidden or the overlay's shared parent.
+        label.layer.contents=nil;
         [label setNeedsDisplay];
     }
 }
@@ -243,7 +252,7 @@ static void RefreshNativeDateLunarSuppression(void) {
     BOOL next=NativeDateLunarSuppressionEnabled();
     if (next==NativeDateLunarSuppressionState) return;
     NativeDateLunarSuppressionState=next;
-    for (UILabel *label in Labels.allObjects) ObserveNativeDateLunar(label);
+    for (UILabel *label in NativeDateLabels.allObjects) ObserveNativeDateLunar(label);
 }
 
 static BOOL InLockScreen(UIView *view) {
@@ -871,6 +880,15 @@ static void RemoveOverlay(UILabel *label) {
     // glyph resource. Text/config invalidation explicitly clears this cache.
     if (!clock) { s.signature=nil; s.revision=0; }
 }
+static void PurgeDisabledDateOverlays(void) {
+    if (!NSThread.isMainThread) return;
+    // Independent of hideNativeDateLunar and current ancestry/text. Includes
+    // detached/reparented sources that discovery can no longer classify.
+    for (UILabel *label in DateOverlayLabels.allObjects) {
+        if (LSGCNativeDateLunar::purgeDateOverlay(true,[Config[@"enabled"] boolValue],
+                [Config[@"dateGradient"] boolValue])) RemoveOverlay(label);
+    }
+}
 // Render at the final clock magnification, not native label resolution.
 // Cap each dimension and total pixels; no bitmap work for position/transform updates.
 static void RemoveOverlayQuiet(UILabel *label) {
@@ -970,6 +988,11 @@ static void Apply(UILabel *label) {
     [Labels addObject:label];
     BOOL isGlassLabel=GlassClass && [label isKindOfClass:GlassClass];
     BOOL clock=IsStandaloneTimeLabel(label);
+    if (LSGCNativeDateLunar::purgeDateOverlay(!clock,[Config[@"enabled"] boolValue],
+            [Config[@"dateGradient"] boolValue])) {
+        RemoveOverlay(label); DiagApplyReturn=@"date-disabled"; return;
+    }
+    if (!clock) [DateOverlayLabels addObject:label];
     LSGCState *clockState=objc_getAssociatedObject(label,&StateKey);
     if (clock && !clockState) {
         clockState=[LSGCState new]; clockState.gradient=[CAGradientLayer layer]; clockState.mask=[CALayer layer];
@@ -1260,7 +1283,7 @@ static void LabelDraw(id obj,SEL sel,CGRect rect) {
     ++DiagDrawDepth;
     @try {
         if (!Rendering && LSGCSystemPromptShouldSuppress((UILabel *)obj)) return;
-        if (!Rendering && NativeDateLunarSuppressionEnabled() && IsNativeDateLunarLeaf((UILabel *)obj)) return;
+        if (ShouldSuppressNativeDateLunar((UILabel *)obj)) return;
         if (!Rendering && NativeClockSuppressionEnabled() && IsStandaloneTimeLabel((UILabel *)obj)) {
             if (main) DiagInc(&DiagSuppress);
             return;
@@ -1407,7 +1430,7 @@ static void InstallClockHooks(void) {
                     ++DiagDrawDepth;
                     @try {
                         if (!Rendering && LSGCSystemPromptShouldSuppress((UILabel *)obj)) return;
-                        if (!Rendering && NativeDateLunarSuppressionEnabled() && IsNativeDateLunarLeaf((UILabel *)obj)) return;
+                        if (ShouldSuppressNativeDateLunar((UILabel *)obj)) return;
         if (!Rendering && NativeClockSuppressionEnabled() && IsStandaloneTimeLabel((UILabel *)obj)) {
                             if (main) DiagInc(&DiagSuppress);
                             return;
@@ -1699,7 +1722,7 @@ __attribute__((constructor)) static void Start(void) {
         if (![NSBundle.mainBundle.bundleIdentifier isEqualToString:@"com.apple.springboard"]) return;
         NSLog(@"[LSGC] constructor initialized");
         dispatch_async(dispatch_get_main_queue(), ^{
-            Labels=[NSHashTable weakObjectsHashTable]; DateViews=[NSHashTable weakObjectsHashTable]; LoadConfig(); NativeClockSuppressionState=NativeClockSuppressionEnabled();
+            Labels=[NSHashTable weakObjectsHashTable]; NativeDateLabels=[NSHashTable weakObjectsHashTable]; DateOverlayLabels=[NSHashTable weakObjectsHashTable]; DateViews=[NSHashTable weakObjectsHashTable]; LoadConfig(); NativeClockSuppressionState=NativeClockSuppressionEnabled();
             StartupComplete=YES;
             InstallHooks();
             LSGCHideSystemPromptsInstall();
