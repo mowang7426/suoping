@@ -102,6 +102,9 @@ jobs:
           c++ -std=c++17 -Wall -Wextra -Werror tests/system_prompt_test.cpp -o /tmp/system_prompt_test
           /tmp/system_prompt_test
           python3 scripts/verify_hide_system_prompts.py
+          python3 scripts/verify_native_date_lunar.py
+          c++ -std=c++17 -Wall -Wextra -Werror tests/native_date_lunar_test.cpp -o /tmp/native_date_lunar_test
+          /tmp/native_date_lunar_test
           python3 scripts/verify_settings.py
 
       - name: Verify package metadata

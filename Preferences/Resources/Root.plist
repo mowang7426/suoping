@@ -57,6 +57,14 @@
 			<key>footerText</key><string>仅在锁屏底部手电筒与相机之间显示；仅充电时显示。系统没有可验证的剩余时间时显示“正在充电”，不会猜测分钟数。</string>
 		</dict>
 		<dict>
+			<key>cell</key><string>PSSwitchCell</string>
+			<key>label</key><string>隐藏原生日期和农历</string>
+			<key>key</key><string>hideNativeDateLunar</string>
+			<key>default</key><false/>
+			<key>defaults</key><string>com.minis.lockscreengradientclock</string>
+			<key>footerText</key><string>开启会抑制严格识别的锁屏系统日期/农历叶子；不会隐藏通知日期、主时间、充电胶囊或顶部充电提示。关闭后恢复原生日期。</string>
+		</dict>
+		<dict>
 			<key>cell</key>
 			<string>PSSwitchCell</string>
 			<key>label</key>

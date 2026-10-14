@@ -17,6 +17,7 @@
 #import "LSGCWakeStrategy.h"
 #import "LSGCChargingETAPill.h"
 #import "LSGCHideSystemPrompts.h"
+#import "LSGCNativeDateLunarPolicy.h"
 
 // An optional companion: never patch, replace or distribute Liquidify binaries.
 extern "C" void MSHookMessageEx(Class, SEL, IMP, IMP *);
@@ -43,10 +44,15 @@ static NSString *HookReport;
 static char StateKey, PendingKey;
 static BOOL Rendering;
 static BOOL NativeClockSuppressionState;
+static BOOL NativeDateLunarSuppressionState;
 static NSUInteger Revision;
 static void Apply(UILabel *label);
 static BOOL NativeClockSuppressionEnabled(void);
 static void RefreshNativeClockSuppression(void);
+static BOOL IsStandaloneTimeLabel(UILabel *label);
+static BOOL NativeDateLunarSuppressionEnabled(void);
+static void RefreshNativeDateLunarSuppression(void);
+static void ObserveNativeDateLunar(UILabel *label);
 static BOOL ClockReplacementReady(UILabel *label);
 static BOOL ClockReplacementReadyForCommit(UILabel *label);
 static void InstallHooks(void);
@@ -139,7 +145,7 @@ static CGFloat Clamp(CGFloat x, CGFloat lo, CGFloat hi) {
 }
 static void LoadConfig(void) {
     CFPreferencesAppSynchronize((__bridge CFStringRef)Domain);
-    NSMutableDictionary *values=[@{@"enabled":@YES,@"color1":@"#39D6ED",@"color2":@"#4D7CFF",@"color3":@"#AD4DF5",@"color4":@"#F950B0",@"color5":@"#FFBD61",@"direction":@0,@"opacity":@0.65,@"animate":@NO,@"strictScope":@YES,@"maskMode":@0,@"glassBlend":@YES,@"glassTint":@0.32,@"edgeEnabled":@NO,@"edgePalette":@0,@"edgeCore":@0.22,@"edgeStrength":@0.65,@"edgeWidth":@1.5,@"edgeHighlight":@0.35,@"edgeReveal":@NO,@"customAngleEnabled":@NO,@"gradientAngle":@0,@"customStopsEnabled":@NO,@"stop1":@0,@"stop2":@0.25,@"stop3":@0.5,@"stop4":@0.75,@"stop5":@1,@"reverseColors":@NO,@"independentEdges":@NO,@"edgeColor1":@"#D0FAFF",@"edgeColor2":@"#B39CFF",@"edgeColor3":@"#F7A9DD",@"timeShift":@NO,@"parallaxAngle":@NO,@"scheduleEnabled":@NO,@"hideNativeClock":@NO,@"chargingETAPill":@NO,@"hideLockScreenPrompts":@NO} mutableCopy];
+    NSMutableDictionary *values=[@{@"enabled":@YES,@"color1":@"#39D6ED",@"color2":@"#4D7CFF",@"color3":@"#AD4DF5",@"color4":@"#F950B0",@"color5":@"#FFBD61",@"direction":@0,@"opacity":@0.65,@"animate":@NO,@"strictScope":@YES,@"maskMode":@0,@"glassBlend":@YES,@"glassTint":@0.32,@"edgeEnabled":@NO,@"edgePalette":@0,@"edgeCore":@0.22,@"edgeStrength":@0.65,@"edgeWidth":@1.5,@"edgeHighlight":@0.35,@"edgeReveal":@NO,@"customAngleEnabled":@NO,@"gradientAngle":@0,@"customStopsEnabled":@NO,@"stop1":@0,@"stop2":@0.25,@"stop3":@0.5,@"stop4":@0.75,@"stop5":@1,@"reverseColors":@NO,@"independentEdges":@NO,@"edgeColor1":@"#D0FAFF",@"edgeColor2":@"#B39CFF",@"edgeColor3":@"#F7A9DD",@"timeShift":@NO,@"parallaxAngle":@NO,@"scheduleEnabled":@NO,@"hideNativeClock":@NO,@"hideNativeDateLunar":@NO,@"chargingETAPill":@NO,@"hideLockScreenPrompts":@NO} mutableCopy];
     // Standalone native lock-screen clock mode: no Liquidify object is required.
     values[@"dateGradient"]=@YES;
     values[@"clockScale"]=@2.35;
@@ -164,6 +170,7 @@ static void LoadConfig(void) {
     }
     Config=values; Revision++; RegisterUserFont();
     LSGCHideSystemPromptsRefresh([Config[@"enabled"] boolValue],[Config[@"hideLockScreenPrompts"] boolValue]);
+    RefreshNativeDateLunarSuppression();
 }
 static UIColor *Color(id input, UIColor *fallback) {
     if (![input isKindOfClass:NSString.class]) return fallback;
@@ -202,6 +209,43 @@ static BOOL ClockDateText(NSString *s) {
 static BOOL GradientText(NSString *s) {
     return TimeText(s) || ([Config[@"dateGradient"] boolValue] && ClockDateText(s));
 }
+static BOOL NativeDateLunarSuppressionEnabled(void) {
+    return [Config[@"enabled"] boolValue] && [Config[@"hideNativeDateLunar"] boolValue];
+}
+static BOOL IsNativeDateLunarLeaf(UILabel *label) {
+    if (!label || label.subviews.count!=0 || !label.window || label.tag==7001 || IsStandaloneTimeLabel(label)) return NO;
+    NSMutableArray *chain=[NSMutableArray array];
+    BOOL dateView=NO, verified=NO, forbidden=NO;
+    for (UIView *v=label; v; v=v.superview) {
+        NSString *name=NSStringFromClass(v.class); [chain addObject:name];
+        if ([name isEqualToString:@"SBFLockScreenDateView"]) dateView=YES;
+        if ([name isEqualToString:@"SBFLockScreenDateSubtitleDateView"] ||
+            [name isEqualToString:@"SBFLockScreenAlternateDateLabel"] ||
+            [name isEqualToString:@"SBUILegibilityLabel"]) verified=YES;
+        if ([name isEqualToString:@"BSUIRelativeDateLabel"]) forbidden=YES;
+    }
+    NSString *text=label.text ?: label.attributedText.string ?: @"";
+    std::vector<std::string> c; for (NSString *name in chain) c.emplace_back(name.UTF8String ?: "");
+    LSGCNativeDateLunar::Input input{std::string(text.UTF8String ?: ""),c,true,true,(int)label.tag};
+    return dateView && verified && !forbidden && LSGCNativeDateLunar::identify(input);
+}
+static char NativeDateLunarStateKey;
+static void ObserveNativeDateLunar(UILabel *label) {
+    if (!label || !NSThread.isMainThread) return;
+    BOOL next=NativeDateLunarSuppressionEnabled() && IsNativeDateLunarLeaf(label);
+    NSNumber *old=objc_getAssociatedObject(label,&NativeDateLunarStateKey);
+    if (!old || old.boolValue!=next) {
+        objc_setAssociatedObject(label,&NativeDateLunarStateKey,@(next),OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        [label setNeedsDisplay];
+    }
+}
+static void RefreshNativeDateLunarSuppression(void) {
+    BOOL next=NativeDateLunarSuppressionEnabled();
+    if (next==NativeDateLunarSuppressionState) return;
+    NativeDateLunarSuppressionState=next;
+    for (UILabel *label in Labels.allObjects) ObserveNativeDateLunar(label);
+}
+
 static BOOL InLockScreen(UIView *view) {
     for (UIView *v=view; v; v=v.superview) {
         for (UIResponder *r=v; r; r=r.nextResponder) {
@@ -1216,6 +1260,7 @@ static void LabelDraw(id obj,SEL sel,CGRect rect) {
     ++DiagDrawDepth;
     @try {
         if (!Rendering && LSGCSystemPromptShouldSuppress((UILabel *)obj)) return;
+        if (!Rendering && NativeDateLunarSuppressionEnabled() && IsNativeDateLunarLeaf((UILabel *)obj)) return;
         if (!Rendering && NativeClockSuppressionEnabled() && IsStandaloneTimeLabel((UILabel *)obj)) {
             if (main) DiagInc(&DiagSuppress);
             return;
@@ -1231,12 +1276,12 @@ static void (*OrigLabelText)(id,SEL,id);
 static void (*OrigLabelAttributed)(id,SEL,id);
 static void LabelLayout(id obj,SEL sel) {
     DiagInc(&DiagLayout); OrigLabelLayout(obj,sel);
-    if (!Rendering) LSGCSystemPromptObserve((UILabel *)obj);
+    if (!Rendering) { LSGCSystemPromptObserve((UILabel *)obj); ObserveNativeDateLunar((UILabel *)obj); }
     Schedule((UILabel *)obj);
 }
 static void LabelMove(id obj,SEL sel) {
     DiagInc(&DiagMove); OrigLabelMove(obj,sel);
-    if (!Rendering) LSGCSystemPromptObserve((UILabel *)obj);
+    if (!Rendering) { LSGCSystemPromptObserve((UILabel *)obj); ObserveNativeDateLunar((UILabel *)obj); }
     Schedule((UILabel *)obj);
 }
 static void InvalidateClockResource(UILabel *label) {
@@ -1272,7 +1317,7 @@ static void LabelText(id obj,SEL sel,id value) {
         BOOL changed=!((before==label.text) || [before isEqualToString:label.text]);
         if (guarded) EndSetter(label);
         if (outer && changed) InvalidateClockResource(label);
-        if (outer) { if (!Rendering) LSGCSystemPromptObserve(label); Schedule(label); }
+        if (outer) { if (!Rendering) { LSGCSystemPromptObserve(label); ObserveNativeDateLunar(label); } Schedule(label); }
     }
 }
 static void LabelAttributed(id obj,SEL sel,id value) {
@@ -1283,7 +1328,7 @@ static void LabelAttributed(id obj,SEL sel,id value) {
         BOOL changed=!((before==label.attributedText) || [before isEqualToAttributedString:label.attributedText]);
         if (guarded) EndSetter(label);
         if (outer && changed) InvalidateClockResource(label);
-        if (outer) { if (!Rendering) LSGCSystemPromptObserve(label); Schedule(label); }
+        if (outer) { if (!Rendering) { LSGCSystemPromptObserve(label); ObserveNativeDateLunar(label); } Schedule(label); }
     }
 }
 static void InstallLabelHooks(void) {
@@ -1334,7 +1379,7 @@ static void InstallClockHooks(void) {
             __block IMP original=NULL;
             void (^refresh)(id)=^(id obj) {
                 if (Rendering || !NSThread.isMainThread) return;
-                if (labelClass) { LSGCSystemPromptObserve((UILabel *)obj); Schedule((UILabel *)obj); return; }
+                if (labelClass) { LSGCSystemPromptObserve((UILabel *)obj); ObserveNativeDateLunar((UILabel *)obj); Schedule((UILabel *)obj); return; }
                 // Discover NEW labels in this local subtree, not only the labels
                 // captured at SpringBoard startup. No global traversal per tick.
                 Walk((UIView *)obj,0);
@@ -1351,7 +1396,7 @@ static void InstallClockHooks(void) {
                                         (beforeAttributed==label.attributedText || [beforeAttributed isEqual:label.attributedText]));
                         if (guarded) EndSetter(label);
                         if (outer && changed) InvalidateClockResource(label);
-                        if (outer) { if (!Rendering) LSGCSystemPromptObserve(label); Schedule(label); }
+                        if (outer) { if (!Rendering) { LSGCSystemPromptObserve(label); ObserveNativeDateLunar(label); } Schedule(label); }
                     }
                 });
             } else if ([method isEqualToString:@"drawTextInRect:"]) {
@@ -1362,7 +1407,8 @@ static void InstallClockHooks(void) {
                     ++DiagDrawDepth;
                     @try {
                         if (!Rendering && LSGCSystemPromptShouldSuppress((UILabel *)obj)) return;
-                        if (!Rendering && NativeClockSuppressionEnabled() && IsStandaloneTimeLabel((UILabel *)obj)) {
+                        if (!Rendering && NativeDateLunarSuppressionEnabled() && IsNativeDateLunarLeaf((UILabel *)obj)) return;
+        if (!Rendering && NativeClockSuppressionEnabled() && IsStandaloneTimeLabel((UILabel *)obj)) {
                             if (main) DiagInc(&DiagSuppress);
                             return;
                         }
@@ -1388,7 +1434,7 @@ static void Walk(UIView *view,NSUInteger depth) {
     if (InLockScreen(view) && [NSStringFromClass(view.class) containsString:@"Date"]) [DateViews addObject:view];
     if ([view isKindOfClass:UILabel.class]) {
         UILabel *label=(UILabel *)view;
-        if (!Rendering) LSGCSystemPromptObserve(label);
+        if (!Rendering) { LSGCSystemPromptObserve(label); ObserveNativeDateLunar(label); }
         BOOL clock=IsStandaloneTimeLabel(label);
         BOOL date=!clock && DateOverlayParent(label)!=nil;
         if (clock || date) { [Labels addObject:label]; Schedule(label); }
