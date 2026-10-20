@@ -21,7 +21,9 @@ int main(void) { @autoreleasepool {
     raw=nil; LSGCJikanETARefresh(YES); assert(!LSGCJikanETACurrentSnapshot());
     raw=@[@1]; LSGCJikanETARefresh(YES); assert([LSGCJikanETAReport() containsString:@"wrong type"]);
     NSUInteger offMainReads=reads;
-    dispatch_sync(dispatch_get_global_queue(QOS_CLASS_UTILITY,0), ^{ LSGCJikanETARefresh(YES); });
+    dispatch_semaphore_t completed=dispatch_semaphore_create(0);
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY,0), ^{ assert(!NSThread.isMainThread); LSGCJikanETARefresh(YES); dispatch_semaphore_signal(completed); });
+    assert(dispatch_semaphore_wait(completed,dispatch_time(DISPATCH_TIME_NOW,5*NSEC_PER_SEC))==0);
     assert(reads==offMainReads);
     raw=good(); LSGCJikanETARefresh(YES); assert(!LSGCJikanETACurrentSnapshot()); // baseline is not publication
     LSGCJikanETAProducerPublished(YES); assert(!LSGCJikanETACurrentSnapshot()); // unchanged old object
