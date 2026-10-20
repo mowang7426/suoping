@@ -19,6 +19,8 @@ assert 'AppleRawMaxCapacity' in s and 'AppleRawCurrentCapacity' in s
 assert 'own-charge-history-v1.plist' in s and 'OwnChargingETA(source=' in s
 assert 'IsCharging' in s and 'ExternalConnected' in s
 assert 'IORegistry' not in p and 'dispatch_source' not in p and 'CAShapeLayer' not in p
+assert 'CFPreferences' not in p and 'LSGCChargingETAPillSetEnabled' in t
+assert 'ExternalKnown' in s and '++Generation; Text=nil; Request()' in s
 assert 'height=30' in p and 'bolt.fill' in p and 'LSGCOwnETAText()' in p
 assert 'LSGCOwnETAConfigure(NO)' in p
 assert 'LSGCOwnETADiagnostic()' in t

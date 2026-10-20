@@ -3,7 +3,7 @@
 #import "LSGCChargingPillPolicy.h"
 #import "LSGCOwnChargingETA.h"
 
-static NSString *const LSGCDomain = @"com.minis.lockscreengradientclock";
+static BOOL LSGCPillEnabled;
 static __weak UIView *LSGCPillHost;
 static __weak UIView *LSGCPill;
 static NSString *LSGCLastText;
@@ -16,7 +16,7 @@ static id LSGCBatteryStateObserver;
 static NSMutableSet *LSGCHookedContainers;
 
 NSString *LSGCBatteryText(UIDeviceBatteryState state, float level) {
-    BOOL charging = state == UIDeviceBatteryStateCharging || state == UIDeviceBatteryStateFull;
+    BOOL charging = state == UIDeviceBatteryStateCharging || state == UIDeviceBatteryStateFull || LSGCOwnETAConnected();
     if (!charging) return nil;
     NSString *own=LSGCOwnETAText();
     if (own) return own;
@@ -32,11 +32,10 @@ NSInteger LSGCBatteryPercent(float level) {
     return MAX(0, MIN(100, p));
 }
 
-static BOOL LSGCOn(void) {
-    CFPreferencesAppSynchronize((__bridge CFStringRef)LSGCDomain);
-    id v=CFBridgingRelease(CFPreferencesCopyAppValue(CFSTR("chargingETAPill"), (__bridge CFStringRef)LSGCDomain));
-    id enabled=CFBridgingRelease(CFPreferencesCopyAppValue(CFSTR("enabled"), (__bridge CFStringRef)LSGCDomain));
-    return (!enabled || [enabled boolValue]) && [v respondsToSelector:@selector(boolValue)] && [v boolValue];
+static BOOL LSGCOn(void) { return LSGCPillEnabled; }
+void LSGCChargingETAPillSetEnabled(BOOL enabled) {
+    NSCAssert(NSThread.isMainThread,@"main-only capsule configuration");
+    LSGCPillEnabled=enabled;
 }
 /* iOS 17 changed the concrete classes. Match the complete class chain, never
  * every UIButton/UIControl in SpringBoard. */
@@ -157,7 +156,7 @@ void LSGCChargingETAPillRefresh(void) {
         LSGCInstallContainerHooks();
         LSGCOwnETAObserve();
         // Negative events remove the WHOLE capsule now, before any queued work.
-        if (!LSGCPillAllowed(true,true,(int)UIDevice.currentDevice.batteryState) || !LSGCHasVisibleContainer()) { LSGCRemove(); return; }
+        if ((!LSGCPillAllowed(true,true,(int)UIDevice.currentDevice.batteryState) && !LSGCOwnETAConnected()) || !LSGCHasVisibleContainer()) { LSGCRemove(); return; }
         uint64_t ticket;
         if (!LSGCQueue.enqueue(ticket)) return;
         dispatch_async(dispatch_get_main_queue(), ^{
@@ -169,7 +168,7 @@ void LSGCChargingETAPillRefresh(void) {
             if (!LSGCOn()) { LSGCChargingETAPillClear(); LSGCRefreshing=NO; return; }
             UIDevice *d=UIDevice.currentDevice;
             NSString *text=LSGCBatteryText(d.batteryState,d.batteryLevel);
-            if (!LSGCPillAllowed(true,true,(int)d.batteryState) || !text.length) { LSGCRemove(); LSGCRefreshing=NO; return; }
+            if ((!LSGCPillAllowed(true,true,(int)d.batteryState) && !LSGCOwnETAConnected()) || !text.length) { LSGCRemove(); LSGCRefreshing=NO; return; }
             for (UIWindow *w in LSGCWindows()) {
                 NSMutableArray *containers=[NSMutableArray array]; for (UIView *root in w.subviews) LSGCCollectContainers(root,containers);
                 for (UIView *container in containers) {

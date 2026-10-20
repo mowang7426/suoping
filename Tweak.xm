@@ -1482,6 +1482,7 @@ static void Discover(void) {
 static void DiscoverAndApply(void) {
     Discover();
     for (UILabel *label in Labels.allObjects) Schedule(label);
+    LSGCChargingETAPillSetEnabled([Config[@"enabled"] boolValue] && [Config[@"chargingETAPill"] boolValue]);
     LSGCOwnETAConfigure([Config[@"enabled"] boolValue] && [Config[@"chargingETAPill"] boolValue] && [Config[@"independentChargingETA"] boolValue]);
     if ([Config[@"enabled"] boolValue] && [Config[@"chargingETAPill"] boolValue]) LSGCChargingETAPillRefresh();
     else LSGCChargingETAPillClear();

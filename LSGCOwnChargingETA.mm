@@ -16,6 +16,7 @@ static dispatch_queue_t Work;
 static dispatch_source_t Timer;
 static OwnETA::Engine Engine;
 static BOOL Loaded, Enabled, Busy, Pending, RequestQueued;
+static BOOL ExternalKnown, ExternalConnected;
 static uint64_t Generation;
 static NSInteger LastState=-99, LastPercent=-99;
 static NSString *Text;
@@ -120,7 +121,7 @@ static NSString *Summary(NSDictionary *p, const OwnETA::Input &x, const OwnETA::
         // Numeric raw values only. No complete registry dump/device identifiers.
         [fields addObject:[NSString stringWithFormat:@"%@=%@",key,[v isKindOfClass:NSNumber.class]?v:@"absent/invalid"]];
     }
-    return [NSString stringWithFormat:@"OwnChargingETA(source=%s,reason=%s,IOKit=%d,fields={%@},sanitized={soc=%.1f,max_mAh=%.2f,current_mAh=%.2f,net_mA=%.2f,capacityTrusted=%d,currentPositive=%d},generation=%llu,historyCoverage=%d/%d,samples=%d,etaSeconds=%.1f,coarse=%d; target100 not guaranteed; no device IDs)",r.source.c_str(),r.reason.c_str(),kr,[fields componentsJoinedByString:@","],x.soc,x.maximum,x.capacity,x.current,OwnETA::validCapacity(x),OwnETA::validCurrent(x.current),(unsigned long long)generation,r.coverage,r.needed,r.samples,r.seconds,r.coarse];
+    return [NSString stringWithFormat:@"OwnChargingETA(source=%s,reason=%s,IOKit=%d,fields={%@},sanitized={soc=%.1f,max_mAh=%.2f,current_mAh=%.2f,net_mA=%.2f,capacityTrusted=%d,currentPositive=%d},generation=%llu,historyCoverage=%d/%d,samples=%d,currentValidationSamples=%lu,etaSeconds=%.1f,coarse=%d; target100 not guaranteed; no device IDs)",r.source.c_str(),r.reason.c_str(),kr,[fields componentsJoinedByString:@","],x.soc,x.maximum,x.capacity,x.current,OwnETA::validCapacity(x),OwnETA::validCurrent(x.current),(unsigned long long)generation,r.coverage,r.needed,r.samples,(unsigned long)Engine.currentSampleCount(),r.seconds,r.coarse];
 }
 static void Run(void) {
     RequestQueued=NO;
@@ -128,7 +129,8 @@ static void Run(void) {
     UIDevice *d=UIDevice.currentDevice;
     NSInteger state=d.batteryState, percent=LSGCBatteryPercent(d.batteryLevel);
     BOOL connected=(state==UIDeviceBatteryStateCharging || state==UIDeviceBatteryStateFull);
-    if (!connected) { LSGCOwnETAObserve(); return; }
+    // Even UIDevice's unplugged/unknown state gets one event-driven registry probe:
+    // external power with charging paused is not equivalent to a physical unplug.
     if (Busy) { Pending=YES; return; }
     Busy=YES; Pending=NO;
     uint64_t generation=Generation;
@@ -157,9 +159,12 @@ static void Run(void) {
             dispatch_async(dispatch_get_main_queue(), ^{
                 Busy=NO;
                 UIDeviceBatteryState current=UIDevice.currentDevice.batteryState;
-                BOOL stillConnected=(current==UIDeviceBatteryStateCharging || current==UIDeviceBatteryStateFull);
-                if (OwnETA::acceptGeneration(generation,Generation,Enabled,stillConnected)) {
-                    Text=[text copy]; TextStamp=x.now; Diagnostic=[summary copy]; LSGCChargingETAPillRefresh();
+                if (generation==Generation && Enabled && current==state) {
+                    ExternalKnown=YES; ExternalConnected=x.connected;
+                    Text=OwnETA::acceptGeneration(generation,Generation,Enabled,x.connected)?[text copy]:@"";
+                    TextStamp=x.now; Diagnostic=[summary copy];
+                    ReconcileTimer(x.connected && !x.full);
+                    LSGCChargingETAPillRefresh();
                 }
                 if (Pending && Enabled) Request();
             });
@@ -184,7 +189,7 @@ static void ReconcileTimer(BOOL on) {
 static void PowerChanged(void *context) {
     (void)context;
     // IOPS source is on main runloop; no registry access here.
-    LSGCOwnETAObserve(); Request();
+    LSGCOwnETAObserve(); ++Generation; Text=nil; Request();
 }
 void LSGCOwnETAObserve(void) {
     NSCAssert(NSThread.isMainThread,@"main-only UIDevice capture");
@@ -195,16 +200,18 @@ void LSGCOwnETAObserve(void) {
     BOOL stateChanged=(state!=LastState);
     LastState=state; LastPercent=percent; ++Generation; Text=nil;
     BOOL connected=(state==UIDeviceBatteryStateCharging || state==UIDeviceBatteryStateFull);
+    if (stateChanged) { ExternalKnown=NO; ExternalConnected=NO; }
     if (stateChanged && state!=UIDeviceBatteryStateFull) dispatch_async(Work, ^{ Engine.reset(); });
     ReconcileTimer(connected);
-    if (connected) Request();
-    else { Diagnostic=@"OwnChargingETA(source=none,reason=disconnected,eta=none)"; Pending=NO; }
+    Request();
+    if (!connected) { Diagnostic=@"OwnChargingETA(source=none,reason=disconnected_pending_probe,eta=none)"; Pending=NO; }
 }
 void LSGCOwnETAConfigure(BOOL enabled) {
     NSCAssert(NSThread.isMainThread,@"main-only configuration");
     if (!Work) Work=dispatch_queue_create("com.minis.own-charge-eta",DISPATCH_QUEUE_SERIAL);
     if (Enabled==enabled) { if (enabled) LSGCOwnETAObserve(); return; }
     Enabled=enabled; ++Generation; Text=nil; Pending=NO; LastState=LastPercent=-99;
+    ExternalKnown=NO; ExternalConnected=NO;
     dispatch_async(Work, ^{ Engine.reset(); });
     if (!enabled) {
         ReconcileTimer(NO);
@@ -217,12 +224,16 @@ void LSGCOwnETAConfigure(BOOL enabled) {
     }
     UIDevice.currentDevice.batteryMonitoringEnabled=YES; LSGCOwnETAObserve();
 }
+BOOL LSGCOwnETAConnected(void) {
+    return Enabled && ExternalKnown && ExternalConnected && Monotonic()-TextStamp<=95;
+}
 NSString *LSGCOwnETAText(void) {
     if (!Enabled) return nil;
+    if (ExternalKnown && !ExternalConnected) return @"";
     if (Text && Monotonic()-TextStamp<=95) return Text;
     UIDevice *d=UIDevice.currentDevice; NSInteger p=LSGCBatteryPercent(d.batteryLevel);
     if (d.batteryState==UIDeviceBatteryStateFull) return @"已充满 · 100%";
-    if (d.batteryState==UIDeviceBatteryStateCharging && p>=0) return [NSString stringWithFormat:@"正在学习 · %ld%%",(long)p];
+    if ((d.batteryState==UIDeviceBatteryStateCharging || LSGCOwnETAConnected()) && p>=0) return [NSString stringWithFormat:@"正在学习 · %ld%%",(long)p];
     return nil;
 }
 NSString *LSGCOwnETADiagnostic(void) { return [Diagnostic copy]; }

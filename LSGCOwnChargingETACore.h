@@ -63,6 +63,7 @@ public:
     std::map<std::string,History> histories;
     uint64_t serial=0, session=0; double batteryMaximum=NAN;
     bool dirty=false;
+    size_t currentSampleCount() const { return currents.size(); }
     void reset() { lastTime=NAN; anchorTime=NAN; lastSOC=-1; boundary=false; currents.clear(); active.clear(); session=0; }
     Result consume(const Input &x) {
         Result r;
@@ -72,6 +73,7 @@ public:
             // Only observed, uninterrupted 99->100 edge; never fill a terminal gap/pause.
             double elapsed=x.now-anchorTime;
             if (x.soc==100 && lastSOC==99 && boundary && session && active==x.charger &&
+                (!std::isfinite(x.current) || x.current>=0) &&
                 std::isfinite(lastTime) && x.now>lastTime && x.now-lastTime<=45 && elapsed>=10 && elapsed<=3600) {
                 auto &v=histories[active][99]; if (v.size()>=8) v.erase(v.begin());
                 v.push_back({elapsed,session,x.wall}); dirty=true;
