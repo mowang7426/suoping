@@ -232,7 +232,11 @@ NSString *LSGCOwnETAText(void) {
     if (ExternalKnown && !ExternalConnected) return @"";
     if (Text && Monotonic()-TextStamp<=95) return Text;
     UIDevice *d=UIDevice.currentDevice; NSInteger p=LSGCBatteryPercent(d.batteryLevel);
-    if (d.batteryState==UIDeviceBatteryStateFull) return @"已充满 · 100%";
+    if (d.batteryState==UIDeviceBatteryStateFull) {
+        if (p==100) return @"已充满 · 100%";
+        if (p>=0) return [NSString stringWithFormat:@"充电暂停 · %ld%%",(long)p];
+        return @"正在学习";
+    }
     if ((d.batteryState==UIDeviceBatteryStateCharging || LSGCOwnETAConnected()) && p>=0) return [NSString stringWithFormat:@"正在学习 · %ld%%",(long)p];
     return nil;
 }

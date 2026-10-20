@@ -69,7 +69,8 @@ public:
         Result r;
         if (!x.connected) { reset(); r.reason="disconnected"; return r; }
         if (!std::isfinite(x.soc) || x.soc<0 || x.soc>100 || !std::isfinite(x.now) || !std::isfinite(x.wall)) { reset(); r.reason="invalid_soc_or_clock"; return r; }
-        if (x.full || x.soc>=100) {
+        if (x.full && x.soc<100) { reset(); r.reason="paused_or_net_discharge"; return r; }
+        if (x.soc>=100) {
             // Only observed, uninterrupted 99->100 edge; never fill a terminal gap/pause.
             double elapsed=x.now-anchorTime;
             if (x.soc==100 && lastSOC==99 && boundary && session && active==x.charger &&

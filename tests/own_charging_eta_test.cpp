@@ -59,6 +59,11 @@ int main() {
     Engine tail; tail.consume(point(0,98)); tail.consume(point(30,99));
     auto full=point(60,100); full.full=true; full.charging=false;
     assert(tail.consume(full).reason=="full"); assert(tail.histories["wired20"][99].size()==1);
+    Engine limited; auto limit=point(0,80); limit.full=true; limit.charging=false;
+    assert(limited.consume(limit).reason=="paused_or_net_discharge");
+    Engine dischargingTail; dischargingTail.consume(point(0,98)); dischargingTail.consume(point(30,99));
+    auto netDischargeFull=full; netDischargeFull.current=-500;
+    dischargingTail.consume(netDischargeFull); assert(dischargingTail.histories["wired20"][99].empty());
     // Own history is reusable across sessions without any fabricated capacity.
     Engine restored; restored.histories["wired20"]=h;
     r=restored.consume(point(0,99)); assert(r.seconds==120 && r.source=="own_history");
