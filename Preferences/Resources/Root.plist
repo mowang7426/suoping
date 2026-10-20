@@ -50,11 +50,20 @@
 		</dict>
 		<dict>
 			<key>cell</key><string>PSSwitchCell</string>
-			<key>label</key><string>锁屏充电剩余时间胶囊</string>
-			<key>key</key><string>chargingETAPill</string>
+			<key>label</key><string>使用 Jikan 充电预测</string>
+			<key>key</key><string>useJikanETA</string>
 			<key>default</key><false/>
 			<key>defaults</key><string>com.minis.lockscreengradientclock</string>
-			<key>footerText</key><string>仅在锁屏底部手电筒与相机之间显示；仅充电时显示。系统没有可验证的剩余时间时显示“正在充电”，不会猜测分钟数。</string>
+			<key>footerText</key><string>默认关闭。需安装并运行 Jikan 1.0.2；只读其 CFPreferences 最新结果，不启动 daemon、IPC、模型或 SQLite。读取失败、过期、目标不明或非充电时回退“正在充电 · 电量”。</string>
+		</dict>
+		<dict>
+			<key>cell</key><string>PSSegmentCell</string>
+			<key>label</key><string>Jikan 预测来源</string>
+			<key>key</key><string>jikanETASource</string>
+			<key>default</key><string>jikan</string>
+			<key>defaults</key><string>com.minis.lockscreengradientclock</string>
+			<key>validTitles</key><array><string>Jikan</string><string>Apple</string></array>
+			<key>validValues</key><array><string>jikan</string><string>apple</string></array>
 		</dict>
 		<dict>
 			<key>cell</key><string>PSSwitchCell</string>

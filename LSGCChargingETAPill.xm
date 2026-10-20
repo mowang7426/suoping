@@ -14,6 +14,15 @@ static id LSGCBatteryLevelObserver;
 static id LSGCBatteryStateObserver;
 static NSMutableSet *LSGCHookedContainers;
 
+NSString *LSGCChargingText(UIDeviceBatteryState state, float level, LSGCJikanETASnapshot *snapshot) {
+    NSString *fallback=LSGCBatteryText(state,level);
+    BOOL charging=state==UIDeviceBatteryStateCharging;
+    NSInteger percent=LSGCBatteryPercent(level);
+    if (!charging || !snapshot || percent<0) return fallback;
+    NSInteger minutes=(snapshot.remainingSeconds+59)/60;
+    return [NSString stringWithFormat:@"预计 %ld 分钟 · 充至 %ld%% · 当前 %ld%%",(long)minutes,(long)snapshot.targetPercent,(long)percent];
+}
+
 NSString *LSGCBatteryText(UIDeviceBatteryState state, float level) {
     BOOL charging = state == UIDeviceBatteryStateCharging || state == UIDeviceBatteryStateFull;
     if (!charging) return nil;
@@ -151,7 +160,8 @@ void LSGCChargingETAPillRefresh(void) {
     LSGCOnMain(^{
         if (!LSGCOn()) { LSGCChargingETAPillClear(); return; }
         LSGCInstallContainerHooks();
-        // Negative events remove the WHOLE capsule now, before any queued work.
+        // Unplug/unknown is a hard session boundary; no late snapshot may revive UI.
+        LSGCJikanETARefresh(UIDevice.currentDevice.batteryState==UIDeviceBatteryStateCharging);
         if (!LSGCPillAllowed(true,true,(int)UIDevice.currentDevice.batteryState) || !LSGCHasVisibleContainer()) { LSGCRemove(); return; }
         uint64_t ticket;
         if (!LSGCQueue.enqueue(ticket)) return;
@@ -163,7 +173,7 @@ void LSGCChargingETAPillRefresh(void) {
             // Never capture battery state/text in the enqueuing callback.
             if (!LSGCOn()) { LSGCChargingETAPillClear(); LSGCRefreshing=NO; return; }
             UIDevice *d=UIDevice.currentDevice;
-            NSString *text=LSGCBatteryText(d.batteryState,d.batteryLevel);
+            NSString *text=LSGCChargingText(d.batteryState,d.batteryLevel,LSGCJikanETACurrentSnapshot());
             if (!LSGCPillAllowed(true,true,(int)d.batteryState) || !text.length) { LSGCRemove(); LSGCRefreshing=NO; return; }
             for (UIWindow *w in LSGCWindows()) {
                 NSMutableArray *containers=[NSMutableArray array]; for (UIView *root in w.subviews) LSGCCollectContainers(root,containers);

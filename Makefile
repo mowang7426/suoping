@@ -6,7 +6,7 @@ INSTALL_TARGET_PROCESSES = SpringBoard
 include $(THEOS)/makefiles/common.mk
 
 TWEAK_NAME = LockScreenGradientClock
-LockScreenGradientClock_FILES = Tweak.xm LSGCChargingETAPill.xm LSGCHideSystemPrompts.xm
+LockScreenGradientClock_FILES = Tweak.xm LSGCChargingETAPill.xm LSGCJikanETAAdapter.m LSGCHideSystemPrompts.xm
 LockScreenGradientClock_CFLAGS = -fobjc-arc
 Tweak.xm_CFLAGS = -std=c++17
 LSGCChargingETAPill.xm_CFLAGS = -std=c++17
