@@ -1,6 +1,7 @@
 #import "LSGCChargingETAPill.h"
 #import <objc/runtime.h>
 #import "LSGCChargingPillPolicy.h"
+#import "LSGCChargingCapsule.inc"
 
 static NSString *const LSGCDomain = @"com.minis.lockscreengradientclock";
 static __weak UIView *LSGCPillHost;
@@ -12,15 +13,15 @@ static BOOL LSGCHooksInstalled;
 static BOOL LSGCBatteryObserversInstalled;
 static id LSGCBatteryLevelObserver;
 static id LSGCBatteryStateObserver;
+static id LSGCJikanPublicationObserver;
 static NSMutableSet *LSGCHookedContainers;
 
 NSString *LSGCChargingText(UIDeviceBatteryState state, float level, LSGCJikanETASnapshot *snapshot) {
     NSString *fallback=LSGCBatteryText(state,level);
     BOOL charging=state==UIDeviceBatteryStateCharging;
     NSInteger percent=LSGCBatteryPercent(level);
-    if (!charging || !snapshot || percent<0) return fallback;
-    NSInteger minutes=(snapshot.remainingSeconds+59)/60;
-    return [NSString stringWithFormat:@"预计 %ld 分钟 · 充至 %ld%% · 当前 %ld%%",(long)minutes,(long)snapshot.targetPercent,(long)percent];
+    if (!charging || !snapshot || percent<0 || percent>=snapshot.targetPercent) return fallback;
+    return LSGCCapsulePresentation((int)state,percent,snapshot.remainingSeconds,snapshot.targetPercent);
 }
 
 NSString *LSGCBatteryText(UIDeviceBatteryState state, float level) {
@@ -130,6 +131,13 @@ static void LSGCInstallContainerHooks(void) {
         NSNotificationCenter *nc=NSNotificationCenter.defaultCenter;
         LSGCBatteryLevelObserver=[nc addObserverForName:UIDeviceBatteryLevelDidChangeNotification object:device queue:NSOperationQueue.mainQueue usingBlock:^(__unused NSNotification *n){ LSGCChargingETAPillRefresh(); }];
         LSGCBatteryStateObserver=[nc addObserverForName:UIDeviceBatteryStateDidChangeNotification object:device queue:NSOperationQueue.mainQueue usingBlock:^(__unused NSNotification *n){ LSGCChargingETAPillRefresh(); }];
+        LSGCJikanPublicationObserver=[nc addObserverForName:@"TT100BatteryInfoUpdated" object:nil queue:nil usingBlock:^(__unused NSNotification *n){
+            // Verified producer publishes after replacing PresentationStore.state on main.
+            // Discard off-main impostors; no synchronous cross-thread wait.
+            if (!NSThread.isMainThread) return;
+            LSGCJikanETAProducerPublished(UIDevice.currentDevice.batteryState==UIDeviceBatteryStateCharging);
+            LSGCChargingETAPillRefresh();
+        }];
         LSGCBatteryObserversInstalled=YES;
     }
     if (LSGCHooksInstalled) return; LSGCHooksInstalled=YES;
@@ -141,10 +149,13 @@ static void LSGCOnMain(dispatch_block_t block) {
 }
 void LSGCChargingETAPillClear(void) { LSGCOnMain(^{
     LSGCRemove();
+    LSGCJikanETAInvalidate();
     if (LSGCBatteryObserversInstalled) {
         NSNotificationCenter *nc=NSNotificationCenter.defaultCenter;
         if (LSGCBatteryLevelObserver) [nc removeObserver:LSGCBatteryLevelObserver];
         if (LSGCBatteryStateObserver) [nc removeObserver:LSGCBatteryStateObserver];
+        if (LSGCJikanPublicationObserver) [nc removeObserver:LSGCJikanPublicationObserver];
+        LSGCJikanPublicationObserver=nil;
         LSGCBatteryLevelObserver=nil; LSGCBatteryStateObserver=nil; LSGCBatteryObserversInstalled=NO;
     }
 }); }
@@ -161,7 +172,7 @@ void LSGCChargingETAPillRefresh(void) {
         if (!LSGCOn()) { LSGCChargingETAPillClear(); return; }
         LSGCInstallContainerHooks();
         // Unplug/unknown is a hard session boundary; no late snapshot may revive UI.
-        LSGCJikanETARefresh(UIDevice.currentDevice.batteryState==UIDeviceBatteryStateCharging);
+        if (UIDevice.currentDevice.batteryState!=UIDeviceBatteryStateCharging) LSGCJikanETAInvalidate();
         if (!LSGCPillAllowed(true,true,(int)UIDevice.currentDevice.batteryState) || !LSGCHasVisibleContainer()) { LSGCRemove(); return; }
         uint64_t ticket;
         if (!LSGCQueue.enqueue(ticket)) return;
@@ -173,6 +184,7 @@ void LSGCChargingETAPillRefresh(void) {
             // Never capture battery state/text in the enqueuing callback.
             if (!LSGCOn()) { LSGCChargingETAPillClear(); LSGCRefreshing=NO; return; }
             UIDevice *d=UIDevice.currentDevice;
+            LSGCJikanETARefresh(d.batteryState==UIDeviceBatteryStateCharging);
             NSString *text=LSGCChargingText(d.batteryState,d.batteryLevel,LSGCJikanETACurrentSnapshot());
             if (!LSGCPillAllowed(true,true,(int)d.batteryState) || !text.length) { LSGCRemove(); LSGCRefreshing=NO; return; }
             for (UIWindow *w in LSGCWindows()) {
@@ -181,17 +193,21 @@ void LSGCChargingETAPillRefresh(void) {
                     LSGCHookContainerClass(container.class); UIView *f=nil,*c=nil; NSUInteger nf=0,nc=0; LSGCFindButtons(container,&f,&c,&nf,&nc);
                     /* Ambiguous or duplicate semantics are deliberately rejected. */
                     if (nf!=1||nc!=1||!f||!c) continue;
-                    NSLog(@"[LSGC][ChargingPill] semantic evidence container=%@ flash=%@/%@ camera=%@/%@",NSStringFromClass(container.class),NSStringFromClass(f.class),LSGCButtonWords(f),NSStringFromClass(c.class),LSGCButtonWords(c));
+                    // Semantic evidence remains bounded to actual quick-action containers.
                     UIView *host=LSGCCommonHost(f,c); if (!host) continue;
                     CGRect fr=[f.superview convertRect:f.frame toView:host],cr=[c.superview convertRect:c.frame toView:host];
                     if (CGRectGetMaxX(fr)>=CGRectGetMinX(cr)||fabs(CGRectGetMidY(fr)-CGRectGetMidY(cr))>1.0) continue;
                     CGFloat gap=CGRectGetMinX(cr)-CGRectGetMaxX(fr); if (gap<8) continue;
-                    CGFloat width=MIN(220.0,MAX(100.0,gap-8)),height=30; CGRect r=CGRectMake(CGRectGetMaxX(fr)+(gap-width)/2,CGRectGetMidY(fr)-height/2,width,height);
+                    LSGCCapsuleGeometry geometry=LSGCCapsuleLayout(gap,MIN(fr.size.height,cr.size.height)); if (!geometry.valid) continue;
+                    CGFloat width=geometry.width,height=geometry.height; CGRect r=CGRectMake(CGRectGetMaxX(fr)+(gap-width)/2,CGRectGetMidY(fr)-height/2,width,height);
                     if (CGRectIntersectsRect(r,fr)||CGRectIntersectsRect(r,cr)) continue;
                     if (LSGCPillHost!=host) { LSGCRemove(); LSGCPillHost=host; }
-                    BOOL newLabel=!LSGCPill;
-                    if (!LSGCPill) { UIView *pill=[[UIView alloc] initWithFrame:r]; pill.backgroundColor=[UIColor colorWithWhite:0 alpha:.42]; pill.layer.cornerRadius=15; pill.userInteractionEnabled=NO; UIImageView *bolt=[[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"bolt.fill"]]; bolt.tintColor=UIColor.whiteColor; bolt.frame=CGRectMake(8,7,16,16); [pill addSubview:bolt]; UILabel *label=[[UILabel alloc] initWithFrame:CGRectMake(27,0,width-31,height)]; label.tag=7001; label.textColor=UIColor.whiteColor; label.font=[UIFont systemFontOfSize:12 weight:UIFontWeightSemibold]; label.adjustsFontSizeToFitWidth=YES; label.minimumScaleFactor=.7; label.textAlignment=NSTextAlignmentCenter; [pill addSubview:label]; label.text=text; [host addSubview:pill]; LSGCPill=pill; }
-                    LSGCPill.frame=r; UILabel *label=(UILabel *)[LSGCPill viewWithTag:7001]; if (LSGCPillNeedsText(newLabel,[LSGCLastText isEqualToString:text],[label.text isEqualToString:text])) { LSGCLastText=[text copy]; label.text=text; } LSGCRefreshing=NO; return;
+                    if (!LSGCPill) { LSGCChargingCapsule *pill=[[LSGCChargingCapsule alloc] initWithFrame:r]; [host addSubview:pill]; LSGCPill=pill; }
+                    if (!CGRectEqualToRect(LSGCPill.frame,r)) LSGCPill.frame=r;
+                    NSString *visual=text;
+                    if (![text containsString:@"\n"]) visual=LSGCCapsulePresentation((int)d.batteryState,LSGCBatteryPercent(d.batteryLevel),0,0);
+                    [(LSGCChargingCapsule *)LSGCPill renderText:visual level:d.batteryLevel];
+                    LSGCLastText=[text copy]; LSGCRefreshing=NO; return;
                 }
             }
             LSGCRemove();

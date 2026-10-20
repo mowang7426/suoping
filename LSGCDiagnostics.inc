@@ -129,6 +129,7 @@ static NSString *DiagScope(UIView *view) {
 static NSString *DiagReport(void) {
     NSMutableArray *lines=[NSMutableArray array];
     [lines addObject:LSGCSystemPromptsReport()];
+    [lines addObject:LSGCJikanETAReport()];
     [lines addObject:@"\n\n=== RealClockDiagnostics v1 ===\n计数为进程累计；主时间 draw 排除 SnapshotText 镜像绘制及 super 链重复调用。安全门通过/附加遮罩不等于真机视觉成功。\n日期渐变、通知时间、充电预估一律不能计入主时间成功。"];
     [lines addObject:[NSString stringWithFormat:@"InstallHooks=%llu Hooked=%d LabelHooked=%d NativeClassesLoaded=%d\nhookCalls layout=%llu didMove=%llu draw=%llu\nmainClockDraw=%llu nativePass=%llu customSuppress=%llu\nSchedule=%llu lastEarlyReturn=%@\nApply=%llu lastEarlyReturn=%@",
         DiagInstall,Hooked,LabelHooked,NativeClassesLoaded,DiagLayout,DiagMove,DiagDraw,DiagMainDraw,DiagNative,DiagSuppress,DiagSchedule,DiagScheduleReturn?:@"none",DiagApply,DiagApplyReturn?:@"none"]];

@@ -1,2 +1,2 @@
 #pragma once
-#define LSGCVersionString @"2.0.22-jikan-eta-pill"
+#define LSGCVersionString @"2.0.23-jikan-runtime-eta-pill"

@@ -18,8 +18,11 @@ extern "C" {
 BOOL LSGCJikanETAEnabled(void);
 NSString *LSGCJikanETASource(void);
 LSGCJikanETASnapshot *LSGCJikanETACurrentSnapshot(void);
-/// Event-driven request. It never waits on the caller and never starts Jikan.
+/// Main-thread lightweight getter only. Never starts Jikan or computes estimates.
 void LSGCJikanETARefresh(BOOL charging);
+/// Called only by the verified post-publication notification.
+void LSGCJikanETAProducerPublished(BOOL charging);
+NSString *LSGCJikanETAReport(void);
 /// Invalidates stale results on unplug/disable/lock-screen generation changes.
 void LSGCJikanETAInvalidate(void);
 
