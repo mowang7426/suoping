@@ -11,6 +11,10 @@
 - (instancetype)initWithSeconds:(NSInteger)seconds target:(NSInteger)target timestamp:(NSTimeInterval)timestamp source:(NSString *)source algorithm:(NSString *)algorithm generation:(uint64_t)generation;
 @end
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 BOOL LSGCJikanETAEnabled(void);
 NSString *LSGCJikanETASource(void);
 LSGCJikanETASnapshot *LSGCJikanETACurrentSnapshot(void);
@@ -18,3 +22,7 @@ LSGCJikanETASnapshot *LSGCJikanETACurrentSnapshot(void);
 void LSGCJikanETARefresh(BOOL charging);
 /// Invalidates stale results on unplug/disable/lock-screen generation changes.
 void LSGCJikanETAInvalidate(void);
+
+#ifdef __cplusplus
+}
+#endif
