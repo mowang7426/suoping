@@ -54,7 +54,15 @@
 			<key>key</key><string>chargingETAPill</string>
 			<key>default</key><false/>
 			<key>defaults</key><string>com.minis.lockscreengradientclock</string>
-			<key>footerText</key><string>仅在锁屏底部手电筒与相机之间显示；仅充电时显示。系统没有可验证的剩余时间时显示“正在充电”，不会猜测分钟数。</string>
+			<key>footerText</key><string>仅在锁屏底部手电筒与相机之间显示；保留原单行闪电胶囊。拔电隐藏。独立充满时间预测须另行开启。</string>
+		</dict>
+		<dict>
+			<key>cell</key><string>PSSwitchCell</string>
+			<key>label</key><string>独立充满时间预测（实验）</string>
+			<key>key</key><string>independentChargingETA</string>
+			<key>default</key><false/>
+			<key>defaults</key><string>com.minis.lockscreengradientclock</string>
+			<key>footerText</key><string>首次需要学习；基于实际电池采样与逐1%历史估计，有误差。缺容量或电流时仅学习；暂停不报分钟。经多次正电流与容量标度验证后可显示“粗估约XX分钟”，不含精确CV预测，非苹果官方。温控、优化充电、限充可能无法到100%。不依赖其他充电插件。</string>
 		</dict>
 		<dict>
 			<key>cell</key><string>PSSwitchCell</string>

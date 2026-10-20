@@ -1,7 +1,7 @@
 #import <UIKit/UIKit.h>
 
-// Event-driven lock-screen charging capsule. Uses only public UIDevice battery
-// state/level; no ETA, timer, display link, polling, or percentage estimation.
+// Event-driven original single-line lock-screen capsule. Optional OwnETA updates
+// text only; all IOKit sampling/math/cache work belongs to its background queue.
 void LSGCChargingETAPillRefresh(void);
 void LSGCChargingETAPillClear(void);
 NSString *LSGCBatteryText(UIDeviceBatteryState state, float level);

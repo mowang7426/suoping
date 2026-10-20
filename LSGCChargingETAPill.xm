@@ -1,6 +1,7 @@
 #import "LSGCChargingETAPill.h"
 #import <objc/runtime.h>
 #import "LSGCChargingPillPolicy.h"
+#import "LSGCOwnChargingETA.h"
 
 static NSString *const LSGCDomain = @"com.minis.lockscreengradientclock";
 static __weak UIView *LSGCPillHost;
@@ -17,6 +18,8 @@ static NSMutableSet *LSGCHookedContainers;
 NSString *LSGCBatteryText(UIDeviceBatteryState state, float level) {
     BOOL charging = state == UIDeviceBatteryStateCharging || state == UIDeviceBatteryStateFull;
     if (!charging) return nil;
+    NSString *own=LSGCOwnETAText();
+    if (own) return own;
     if (state == UIDeviceBatteryStateFull) return @"已充满 · 100%";
     NSInteger percent = LSGCBatteryPercent(level);
     return percent < 0 ? @"正在充电" : [NSString stringWithFormat:@"正在充电 · %ld%%", (long)percent];
@@ -131,6 +134,7 @@ static void LSGCOnMain(dispatch_block_t block) {
     else dispatch_async(dispatch_get_main_queue(), block);
 }
 void LSGCChargingETAPillClear(void) { LSGCOnMain(^{
+    LSGCOwnETAConfigure(NO);
     LSGCRemove();
     if (LSGCBatteryObserversInstalled) {
         NSNotificationCenter *nc=NSNotificationCenter.defaultCenter;
@@ -151,6 +155,7 @@ void LSGCChargingETAPillRefresh(void) {
     LSGCOnMain(^{
         if (!LSGCOn()) { LSGCChargingETAPillClear(); return; }
         LSGCInstallContainerHooks();
+        LSGCOwnETAObserve();
         // Negative events remove the WHOLE capsule now, before any queued work.
         if (!LSGCPillAllowed(true,true,(int)UIDevice.currentDevice.batteryState) || !LSGCHasVisibleContainer()) { LSGCRemove(); return; }
         uint64_t ticket;

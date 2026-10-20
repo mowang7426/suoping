@@ -3,7 +3,7 @@ name: Build LockScreenGradientClock
 on:
   workflow_dispatch:
   push:
-    branches: [ 'feature/hide-native-date-lunar', 'fix/charging-pill-unplug-hide', 'fix/hide-charging-prompt-ios17', main, master, 'fix/wake-flash-safe-2.0.8', 'feature/hide-native-clock-switch', 'feature/charging-eta-pill', 'feature/charging-eta-pill-ios17-compat', 'feature/charging-pill-battery-percent', 'feature/hide-lockscreen-system-prompts' ]
+    branches: [ 'feature/independent-charge-eta', 'feature/hide-native-date-lunar', 'fix/charging-pill-unplug-hide', 'fix/hide-charging-prompt-ios17', main, master, 'fix/wake-flash-safe-2.0.8', 'feature/hide-native-clock-switch', 'feature/charging-eta-pill', 'feature/charging-eta-pill-ios17-compat', 'feature/charging-pill-battery-percent', 'feature/hide-lockscreen-system-prompts' ]
 
 jobs:
   build:
@@ -48,6 +48,13 @@ jobs:
           test -d "$THEOS/sdks/iPhoneOS16.5.sdk"
           echo "THEOS=$THEOS"
           xcrun --version
+
+      - name: Run independent charging ETA production-core regression
+        run: |
+          set -e
+          c++ -std=c++17 -Wall -Wextra -Werror tests/own_charging_eta_test.cpp -o /tmp/own_charging_eta_test
+          /tmp/own_charging_eta_test
+          python3 scripts/verify_own_charging_eta.py
 
       - name: Run wake safety regression
         run: |
