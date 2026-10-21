@@ -103,13 +103,17 @@ int main() { @autoreleasepool {
     assert(LSGCNotificationsAppBarProviderABI(c,&reason));
     auto a=Request(@"a",@"1",0,30),b=Request(@"b",@"1",1,20),b2=Request(@"b",@"2",1,10);
     [c insertNotificationRequest:a]; [c insertNotificationRequest:b]; [c insertNotificationRequest:b2];
+    // Separate authoritative repository is never handed to the projection bridge.
+    NSMutableSet *repository=[NSMutableSet setWithArray:@[a,b,b2]];
     LSGCNotificationProjection *p=[[LSGCNotificationProjection alloc] initWithController:c];
     assert(Total(p)==3 && [p selectApplication:@"a"]);
     Drain(p); assert(p.hiddenCount==2 && Contains(c,a) && !Contains(c,b) && Total(p)==3);
+    assert(repository.count==3 && [repository containsObject:b] && [repository containsObject:b2]);
     NSUInteger previous=displayInserts;
     // User/dispatcher withdrawal of a hidden request: original first, then event.
-    [c removeNotificationRequest:b]; [p observeRequest:b removed:YES];
+    [repository removeObject:b]; [c removeNotificationRequest:b]; [p observeRequest:b removed:YES];
     Drain(p,YES); assert(!Contains(c,b) && Contains(c,b2) && p.hiddenCount==0 && displayInserts==previous+1);
+    assert(repository.count==2 && ![repository containsObject:b]);
     assert(Total(p)==2);
     // Original receive is never intercepted: real row exists before projection.
     auto fresh=Request(@"b",@"3",1,40);
@@ -144,10 +148,13 @@ int main() { @autoreleasepool {
     // Exact real selector ABI validation, not respondsToSelector-only gating.
     SEL sel=@selector(removeNotificationRequest:);
     Method method=class_getInstanceMethod(c.class,sel); IMP implementation=method_getImplementation(method);
-    std::string encoding=method_getTypeEncoding(method);
-    class_replaceMethod(c.class,sel,implementation,"B@:@");
-    assert(!LSGCNotificationsAppBarProviderABI(c,&reason));
-    class_replaceMethod(c.class,sel,implementation,encoding.c_str());
+    // class_replaceMethod does NOT replace an existing method's type encoding.
+    // A real registered subclass override is required to exercise malformed ABI.
+    Class malformed=objc_allocateClassPair(c.class,"MalformedABIController",0);
+    assert(malformed && class_addMethod(malformed,sel,implementation,"B@:@"));
+    objc_registerClassPair(malformed);
+    id badController=[[malformed alloc] init];
+    assert(!LSGCNotificationsAppBarProviderABI(badController,&reason));
     assert(LSGCNotificationsAppBarProviderABI(c,&reason));
     // Duplicate identities are counted once, even across arrays/sections.
     NCNotificationStructuredSectionList *s=c.masterList.notificationListSections[0];
@@ -161,6 +168,12 @@ int main() { @autoreleasepool {
     Drain(p); assert(p.hiddenCount==100 && Total(p)==101);
     Drain(p,YES); assert(p.hiddenCount==0 && Total(p)==101);
     for (unsigned i=0;i<40;i++) { assert([p selectApplication:@"a"]); Drain(p); Drain(p,YES); assert(p.hiddenCount==0); }
+    // Authoritative source section removal also tombstones hidden requests.
+    assert([p selectApplication:@"a"]); Drain(p); assert(p.hiddenCount==100);
+    NCNotificationStructuredSectionList *removedSection=c.masterList.notificationListSections[1];
+    [removedSection.items removeAllObjects]; // real source original precedes observation
+    [p observeSectionRemoved:@"b"]; previous=displayInserts; Drain(p,YES);
+    assert(!p.hiddenCount && Total(p)==1 && displayInserts==previous);
     // A no-op native implementation is NOT a successful applied filter.
     NCNotificationStructuredListViewController *noOp=[NCNotificationStructuredListViewController new];
     auto na=Request(@"a",@"na"),nb=Request(@"b",@"nb");

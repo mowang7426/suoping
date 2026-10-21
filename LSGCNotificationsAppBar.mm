@@ -131,6 +131,12 @@ LSGCNotifications::Snapshot LSGCNotificationsAppBarReadSnapshot(id controller,NS
         if (self.applying) self.retry=YES;
     } @catch (__unused NSException *e) { self.selected=@""; self.reason=@"source-read-exception"; }
 }
+- (void)observeSectionRemoved:(NSString *)identifier {
+    NSAssert(NSThread.isMainThread,@"main queue required");
+    if (![identifier isKindOfClass:NSString.class] || !identifier.length || identifier.length>512) return;
+    for (NSArray *key in self.owned.allKeys) if ([key[0] isEqual:identifier]) [self.owned removeObjectForKey:key];
+    if (self.applying) self.retry=YES;
+}
 - (BOOL)selectApplication:(NSString *)app {
     NSAssert(NSThread.isMainThread,@"main queue required");
     if (![app isKindOfClass:NSString.class] || app.length>512 || (app.length && self.failed)) return NO;

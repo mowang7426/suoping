@@ -22,6 +22,7 @@ LSGCNotifications::Snapshot LSGCNotificationsAppBarReadSnapshot(id controller, N
 - (BOOL)selectApplication:(NSString *)application;
 - (BOOL)reconcile; // bounded batch; YES means additional work remains
 - (void)observeRequest:(id)request removed:(BOOL)removed;
+- (void)observeSectionRemoved:(NSString *)identifier;
 - (BOOL)restore;
 - (void)sourceDestroyed;
 - (NSArray<NSDictionary *> *)rows;

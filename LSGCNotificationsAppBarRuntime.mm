@@ -11,7 +11,7 @@ static std::atomic<bool> installQueued{false};
 
 extern unsigned LSGCNotificationProjectionDepth;
 namespace {
-static BOOL enabled=NO,queued=NO,pumping=NO,installed=NO,leaving=NO;
+static BOOL enabled=NO,queued=NO,pumping=NO,installed=NO,leaving=NO,interactionPaused=NO;
 static __weak UIViewController *owner;
 static __weak UIViewController *candidate;
 static void *ownerIdentity=nullptr;
@@ -39,7 +39,10 @@ static BOOL Locked() {
     Class cls=objc_getClass("SBLockScreenManager");
     if (!Signature(object_getClass(cls),"sharedInstance",'@',"")) return NO;
     id manager=Get(cls,"sharedInstance");
-    return Signature(object_getClass(manager),"isUILocked",'B',"") && ((bool(*)(id,SEL))objc_msgSend)(manager,sel_registerName("isUILocked"));
+    const char *checks[]={"isUILocked","isLockScreenVisible","_isPasscodeVisible","isPasscodeEntryTransientOverlayVisible"};
+    for (const char *selector:checks) if (!Signature(object_getClass(manager),selector,'B',"")) return NO;
+    auto flag=[&](const char *selector) { return ((bool(*)(id,SEL))objc_msgSend)(manager,sel_registerName(selector)); };
+    return flag(checks[0]) && flag(checks[1]) && !flag(checks[2]) && !flag(checks[3]);
 }
 static BOOL Shown(UIView *view,UIWindow *window) {
     if (!view || view.window!=window || CGRectIsEmpty(view.bounds)) return NO;
@@ -101,7 +104,7 @@ static void Pump() {
         if (!installed) { Unmount(); if (!enabled) status=@"disabled"; return; }
         if (!projection) { Unmount(); status=enabled?@"waiting-native-owner":@"disabled"; return; }
         if (!owner) { [projection sourceDestroyed]; projection=nil; Unmount(); status=@"source-destroyed"; return; }
-        if (!enabled || leaving || !Locked()) {
+        if (!enabled || leaving || interactionPaused || !Locked()) {
             BOOL more=[projection restore]; FlushPersistence(); Unmount(); status=projection.hiddenCount?@"restore-pending":@"restored";
             if (more) Schedule();
             else if (!projection.hiddenCount) projection=nil;
@@ -178,7 +181,29 @@ static void (*origPost)(id,SEL,id);
 static void (*origUpdate)(id,SEL,id);
 static void (*origWithdraw)(id,SEL,id);
 static void (*origDispatcherWithdraw)(id,SEL,id);
+static void (*origSectionRemove)(id,SEL,id);
+static void SectionRemove(id self,SEL cmd,id identifier) {
+    origSectionRemove(self,cmd,identifier);
+    void (^observe)(void)=^{ [projection observeSectionRemoved:identifier]; if (enabled || projection.hiddenCount) Schedule(); };
+    if (NSThread.isMainThread) observe(); else dispatch_async(dispatch_get_main_queue(),observe);
+}
 static void (*origSetLocked)(id,SEL,bool);
+static void (*origPasscode)(id,SEL,bool,bool);
+static void Passcode(id self,SEL cmd,bool visible,bool animated) {
+    origPasscode(self,cmd,visible,animated);
+    if (NSThread.isMainThread && visible) Unmount();
+    Schedule();
+}
+static void (*origInteractionBegin)(id,SEL,id,id);
+static void (*origInteractionEnd)(id,SEL,id,id);
+static void InteractionBegin(id self,SEL cmd,id list,id card) {
+    origInteractionBegin(self,cmd,list,card);
+    if (list==owner) { interactionPaused=YES; Schedule(); }
+}
+static void InteractionEnd(id self,SEL cmd,id list,id card) {
+    origInteractionEnd(self,cmd,list,card);
+    if (list==owner) { interactionPaused=NO; Attach(list); Schedule(); }
+}
 static void (*origPersist)(id,SEL);
 static void (*origDestroy)(__unsafe_unretained id,SEL);
 static void Destroy(__unsafe_unretained id self,SEL cmd) {
@@ -189,7 +214,7 @@ static void Destroy(__unsafe_unretained id self,SEL cmd) {
     void (^cleanup)(void)=^{
         if (ownerIdentity!=identity) return;
         [projection sourceDestroyed]; projection=nil; ownerIdentity=nullptr;
-        presentationMaster=nil; persistenceDeferred=NO; Unmount(); status=@"source-destroyed";
+        presentationMaster=nil; persistenceDeferred=NO; interactionPaused=NO; Unmount(); status=@"source-destroyed";
     };
     if (NSThread.isMainThread) cleanup(); else dispatch_async(dispatch_get_main_queue(),cleanup);
 }
@@ -255,10 +280,14 @@ static void Install() {
         {"NCNotificationStructuredListViewController","removeNotificationRequest:",'v',"@",(IMP)Remove,(IMP *)&origRemove},
         {"NCNotificationMasterList","_updateNotificationListPersistentState",'v',"",(IMP)Persist,(IMP *)&origPersist},
         {"CSQuickActionsView","layoutSubviews",'v',"",(IMP)QuickLayout,(IMP *)&origQuickLayout},
+        {"CSCombinedListViewController","notificationStructuredListViewController:didBeginUserInteractionWithViewController:",'v',"@@",(IMP)InteractionBegin,(IMP *)&origInteractionBegin},
+        {"CSCombinedListViewController","notificationStructuredListViewController:didEndUserInteractionWithViewController:",'v',"@@",(IMP)InteractionEnd,(IMP *)&origInteractionEnd},
         {"CSCombinedListViewController","postNotificationRequest:",'v',"@",(IMP)Post,(IMP *)&origPost},
         {"CSCombinedListViewController","updateNotificationRequest:",'v',"@",(IMP)Update,(IMP *)&origUpdate},
         {"CSCombinedListViewController","withdrawNotificationRequest:",'v',"@",(IMP)Withdraw,(IMP *)&origWithdraw},
+        {"NCNotificationDispatcher","removeNotificationSectionWithIdentifier:",'v',"@",(IMP)SectionRemove,(IMP *)&origSectionRemove},
         {"NCNotificationDispatcher","withdrawNotificationWithRequest:",'v',"@",(IMP)DispatcherWithdraw,(IMP *)&origDispatcherWithdraw},
+        {"SBLockScreenManager","setPasscodeVisible:animated:",'v',"BB",(IMP)Passcode,(IMP *)&origPasscode},
         {"SBLockScreenManager","_setUILocked:",'v',"B",(IMP)SetLocked,(IMP *)&origSetLocked},
     };
     // Validate the WHOLE surface before hooking ANY method. Unknown iOS17
@@ -287,8 +316,13 @@ void LSGCNotificationsAppBarLeaveLockScreen(void) {
 }
 NSString *LSGCNotificationsAppBarDiagnostic(void) {
     if (!NSThread.isMainThread) return @"NotificationsAppBar reason=not-main-thread";
-    return [NSString stringWithFormat:@"NotificationsAppBar enabled=%d adapter=%d mounted=%d selected=%@ hidden=%lu reason=%@ targetDeviceVerified=0",
-        enabled,installed,bar.superview!=nil,projection.selected.length?@"app":@"all",(unsigned long)projection.hiddenCount,status];
+    NSArray *rows=[projection rows];
+    NSUInteger total=[rows.firstObject[@"count"] unsignedIntegerValue];
+    BOOL applied=bar.superview && [status isEqual:@"native-display-projection"] &&
+        [projection.reason isEqual:@"ready"] && [lastSelection isEqual:projection.selected] && projection.selected.length>0;
+    return [NSString stringWithFormat:@"NotificationsAppBar enabled=%d adapter=%d mounted=%d applied=%d selected=%@ total=%lu apps=%lu hidden=%lu reason=%@ targetDeviceVerified=0",
+        enabled,installed,bar.superview!=nil,applied,projection.selected.length?@"app":@"all",(unsigned long)total,
+        (unsigned long)(rows.count?rows.count-1:0),(unsigned long)projection.hiddenCount,status];
 }
 __attribute__((constructor)) static void NotificationsAppBarInitialize() {
     _dyld_register_func_for_add_image(ImageLoaded);
