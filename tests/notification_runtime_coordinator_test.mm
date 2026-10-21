@@ -65,7 +65,7 @@
 - (void)removeNotificationRequest:(id)request;
 @end
 @implementation NCNotificationStructuredListViewController
-- (void)insertNotificationRequest:(id)request { NSMutableArray *items=[self.masterList notificationListSections][0].items; if (![items containsObject:request]) [items addObject:request]; }
+- (void)insertNotificationRequest:(id)request { NSMutableArray *items=[(NCNotificationStructuredSectionList *)[self.masterList notificationListSections][0] items]; if (![items containsObject:request]) [items addObject:request]; }
 - (void)modifyNotificationRequest:(id)request { (void)request; }
 - (void)removeNotificationRequest:(id)request { [[[self.masterList notificationListSections][0] items] removeObjectIdenticalTo:request]; }
 @end
