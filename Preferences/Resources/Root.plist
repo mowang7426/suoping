@@ -27,6 +27,14 @@
 			<string>com.minis.lockscreengradientclock</string>
 		</dict>
 		<dict>
+			<key>cell</key><string>PSSwitchCell</string>
+			<key>label</key><string>通知应用图标栏（候选实验）</string>
+			<key>key</key><string>notificationAppBar</string>
+			<key>default</key><false/>
+			<key>defaults</key><string>com.minis.lockscreengradientclock</string>
+			<key>footerText</key><string>默认关闭，独立于充电胶囊。仅在锁定、iOS17显示接口和真实空间校验通过时启用。横向全部/应用与数量，原生通知卡片显示筛选；关闭、全部或离开锁屏恢复本模块临时移出的活跃通知。不会清除通知仓库。未在14 Pro Max iOS17 relaxin RootHide真机验证。</string>
+		</dict>
+		<dict>
 			<key>cell</key>
 			<string>PSSwitchCell</string>
 			<key>label</key>

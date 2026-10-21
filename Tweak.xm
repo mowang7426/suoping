@@ -17,6 +17,7 @@
 #import "LSGCWakeStrategy.h"
 #import "LSGCChargingETAPill.h"
 #import "LSGCOwnChargingETA.h"
+#import "LSGCNotificationsAppBar.h"
 #import "LSGCHideSystemPrompts.h"
 #import "LSGCNativeDateLunarPolicy.h"
 
@@ -149,7 +150,7 @@ static CGFloat Clamp(CGFloat x, CGFloat lo, CGFloat hi) {
 }
 static void LoadConfig(void) {
     CFPreferencesAppSynchronize((__bridge CFStringRef)Domain);
-    NSMutableDictionary *values=[@{@"enabled":@YES,@"color1":@"#39D6ED",@"color2":@"#4D7CFF",@"color3":@"#AD4DF5",@"color4":@"#F950B0",@"color5":@"#FFBD61",@"direction":@0,@"opacity":@0.65,@"animate":@NO,@"strictScope":@YES,@"maskMode":@0,@"glassBlend":@YES,@"glassTint":@0.32,@"edgeEnabled":@NO,@"edgePalette":@0,@"edgeCore":@0.22,@"edgeStrength":@0.65,@"edgeWidth":@1.5,@"edgeHighlight":@0.35,@"edgeReveal":@NO,@"customAngleEnabled":@NO,@"gradientAngle":@0,@"customStopsEnabled":@NO,@"stop1":@0,@"stop2":@0.25,@"stop3":@0.5,@"stop4":@0.75,@"stop5":@1,@"reverseColors":@NO,@"independentEdges":@NO,@"edgeColor1":@"#D0FAFF",@"edgeColor2":@"#B39CFF",@"edgeColor3":@"#F7A9DD",@"timeShift":@NO,@"parallaxAngle":@NO,@"scheduleEnabled":@NO,@"hideNativeClock":@NO,@"hideNativeDateLunar":@NO,@"chargingETAPill":@NO,@"independentChargingETA":@NO,@"hideLockScreenPrompts":@NO} mutableCopy];
+    NSMutableDictionary *values=[@{@"enabled":@YES,@"color1":@"#39D6ED",@"color2":@"#4D7CFF",@"color3":@"#AD4DF5",@"color4":@"#F950B0",@"color5":@"#FFBD61",@"direction":@0,@"opacity":@0.65,@"animate":@NO,@"strictScope":@YES,@"maskMode":@0,@"glassBlend":@YES,@"glassTint":@0.32,@"edgeEnabled":@NO,@"edgePalette":@0,@"edgeCore":@0.22,@"edgeStrength":@0.65,@"edgeWidth":@1.5,@"edgeHighlight":@0.35,@"edgeReveal":@NO,@"customAngleEnabled":@NO,@"gradientAngle":@0,@"customStopsEnabled":@NO,@"stop1":@0,@"stop2":@0.25,@"stop3":@0.5,@"stop4":@0.75,@"stop5":@1,@"reverseColors":@NO,@"independentEdges":@NO,@"edgeColor1":@"#D0FAFF",@"edgeColor2":@"#B39CFF",@"edgeColor3":@"#F7A9DD",@"timeShift":@NO,@"parallaxAngle":@NO,@"scheduleEnabled":@NO,@"hideNativeClock":@NO,@"hideNativeDateLunar":@NO,@"chargingETAPill":@NO,@"independentChargingETA":@NO,@"hideLockScreenPrompts":@NO,@"notificationAppBar":@NO} mutableCopy];
     // Standalone native lock-screen clock mode: no Liquidify object is required.
     values[@"dateGradient"]=@YES;
     values[@"clockScale"]=@2.35;
@@ -1482,6 +1483,7 @@ static void Discover(void) {
 static void DiscoverAndApply(void) {
     Discover();
     for (UILabel *label in Labels.allObjects) Schedule(label);
+    LSGCNotificationsAppBarConfigure([Config[@"enabled"] boolValue] && [Config[@"notificationAppBar"] boolValue]);
     LSGCChargingETAPillSetEnabled([Config[@"enabled"] boolValue] && [Config[@"chargingETAPill"] boolValue]);
     LSGCOwnETAConfigure([Config[@"enabled"] boolValue] && [Config[@"chargingETAPill"] boolValue] && [Config[@"independentChargingETA"] boolValue]);
     if ([Config[@"enabled"] boolValue] && [Config[@"chargingETAPill"] boolValue]) LSGCChargingETAPillRefresh();
@@ -1547,6 +1549,7 @@ static void WriteDiagnostics(void) {
         [Config[@"dateGradient"] boolValue]?@"开":@"关",LabelHooked?@"是":@"否",(unsigned long)dates,(unsigned long)dateActive,
         [dateDetails componentsJoinedByString:@"\n"],[tree componentsJoinedByString:@"\n"]];
     report=[report stringByAppendingFormat:@"\n时间字体：%@",FontStatus?:@"未加载"];
+    report=[report stringByAppendingFormat:@"\n%@",LSGCNotificationsAppBarDiagnostic()];
     report=[report stringByAppendingFormat:@"\n%@",LSGCOwnETADiagnostic()];
     report=[report stringByAppendingString:DiagReport()];
     CFPreferencesSetAppValue(CFSTR("diagnosticReport"),(__bridge CFStringRef)report,(__bridge CFStringRef)Domain);

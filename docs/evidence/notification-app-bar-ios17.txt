@@ -1,0 +1,107 @@
+Public runtime declaration evidence; iOS 17.0.3, not a binary call-graph proof.
+
+
+URL https://raw.githubusercontent.com/MTACS/iOS-17-Runtime-Headers/d1d960dfaa4107765dd7fcf891e4967c0930d5fd/PrivateFrameworks/UserNotificationsUIKit.framework/NCNotificationStructuredListViewController.h
+SHA256 0d47a99a2a749dc216c9c579713a5f0b74a618669744aadc6b88b60033fbc1d5
+23:     NCNotificationMasterList * _masterList;
+24:     NCNotificationListView * _masterListView;
+62: @property (nonatomic, retain) NCNotificationMasterList *masterList;
+63: @property (nonatomic, retain) NCNotificationListView *masterListView;
+137: - (void)insertNotificationRequest:(id)arg1;
+153: - (id)masterList;
+154: - (id)masterListView;
+160: - (void)modifyNotificationRequest:(id)arg1;
+250: - (void)removeNotificationRequest:(id)arg1;
+
+URL https://raw.githubusercontent.com/MTACS/iOS-17-Runtime-Headers/d1d960dfaa4107765dd7fcf891e4967c0930d5fd/PrivateFrameworks/UserNotificationsUIKit.framework/NCNotificationMasterList.h
+SHA256 f62ae688a7b4eb6a47dafc27a559e0783ef73d8bebc573b0261dd1cf825c0756
+85: @property (nonatomic, readonly, copy) NSArray *notificationListSections;
+162: - (id)_notificationListSections;
+192: - (void)_updateNotificationListPersistentState;
+274: - (id)notificationListSections;
+
+URL https://raw.githubusercontent.com/MTACS/iOS-17-Runtime-Headers/d1d960dfaa4107765dd7fcf891e4967c0930d5fd/PrivateFrameworks/UserNotificationsUIKit.framework/NCNotificationStructuredSectionList.h
+SHA256 f9b3e73fd6320dbb47883e88419a6bbb2677f9dee2e7c2120f7a7968ea9dcee3
+38: @property (nonatomic, readonly) NSArray *allNotificationRequests;
+140: - (id)allNotificationRequests;
+
+URL https://raw.githubusercontent.com/MTACS/iOS-17-Runtime-Headers/d1d960dfaa4107765dd7fcf891e4967c0930d5fd/PrivateFrameworks/UserNotificationsUIKit.framework/NCNotificationListCell.h
+SHA256 e8acb7702f18d3161575e23d7a8997742587080dff84b434e01aecc1c1b597c4
+2: @interface NCNotificationListCell : UIView <NCMaterialDisplaying, NCNotificationListDimmable, PLSwipeInteractionDelegate> {
+6:     UIViewController<NCNotificationListDimmable> * _contentViewController;
+19: @property (nonatomic, retain) UIViewController<NCNotificationListDimmable> *contentViewController;
+26: @property (nonatomic, readonly) NCNotificationViewController *notificationViewController;
+48: - (id)contentViewController;
+58: - (id)notificationViewController;
+
+URL https://raw.githubusercontent.com/MTACS/iOS-17-Runtime-Headers/d1d960dfaa4107765dd7fcf891e4967c0930d5fd/PrivateFrameworks/UserNotificationsKit.framework/NCNotificationRequest.h
+SHA256 f07623e9ba36fc8750fed72579df977397c49b215265edb18d54ce753143a003
+19:     NSString * _notificationIdentifier;
+20:     NCNotificationOptions * _options;
+25:     NSString * _sectionIdentifier;
+32:     NSString * _threadIdentifier;
+33:     bool  _threadIdentifierUnique;
+34:     NSDate * _timestamp;
+69: @property (nonatomic, readonly, copy) NSString *notificationIdentifier;
+71: @property (nonatomic, readonly) NCNotificationOptions *options;
+76: @property (nonatomic, readonly, copy) NSString *sectionIdentifier;
+85: @property (nonatomic, readonly, copy) NSString *threadIdentifier;
+86: @property (getter=isUniqueThreadIdentifier, nonatomic, readonly) bool threadIdentifierUnique;
+87: @property (nonatomic, readonly) NSDate *timestamp;
+107: + (id)notificationRequestWithNotificationId:(id)arg1 threadId:(id)arg2 timestamp:(id)arg3;
+108: + (id)notificationRequestWithNotificationId:(id)arg1 timestamp:(id)arg2;
+115: + (id)notificationRequestWithSectionId:(id)arg1 notificationId:(id)arg2 threadId:(id)arg3 subSectionIds:(id)arg4 title:(id)arg5 message:(id)arg6 timestamp:(id)arg7 destinations:(id)arg8 options:(id)arg9;
+116: + (id)notificationRequestWithSectionId:(id)arg1 notificationId:(id)arg2 threadId:(id)arg3 subSectionIds:(id)arg4 title:(id)arg5 message:(id)arg6 timestamp:(id)arg7 destinations:(id)arg8 options:(id)arg9 alertOptions:(id)arg10 uuid:(id)arg11;
+117: + (id)notificationRequestWithSectionId:(id)arg1 notificationId:(id)arg2 threadId:(id)arg3 subSectionIds:(id)arg4 title:(id)arg5 message:(id)arg6 timestamp:(id)arg7 destinations:(id)arg8 options:(id)arg9 uuid:(id)arg10;
+118: + (id)notificationRequestWithSectionId:(id)arg1 notificationId:(id)arg2 threadId:(id)arg3 timestamp:(id)arg4;
+119: + (id)notificationRequestWithSectionId:(id)arg1 notificationId:(id)arg2 threadId:(id)arg3 title:(id)arg4 message:(id)arg5 timestamp:(id)arg6 destination:(id)arg7;
+120: + (id)notificationRequestWithSectionId:(id)arg1 notificationId:(id)arg2 threadId:(id)arg3 title:(id)arg4 message:(id)arg5 timestamp:(id)arg6 destination:(id)arg7 uuid:(id)arg8;
+121: + (id)notificationRequestWithSectionId:(id)arg1 notificationId:(id)arg2 threadId:(id)arg3 title:(id)arg4 message:(id)arg5 timestamp:(id)arg6 destinations:(id)arg7;
+122: + (id)notificationRequestWithSectionId:(id)arg1 notificationId:(id)arg2 timestamp:(id)arg3;
+128: + (id)notificationRequestWithThreadId:(id)arg1 timestamp:(id)arg2;
+165: - (id)notificationIdentifier;
+166: - (id)options;
+171: - (id)sectionIdentifier;
+180: - (id)threadIdentifier;
+181: - (id)timestamp;
+
+URL https://raw.githubusercontent.com/MTACS/iOS-17-Runtime-Headers/d1d960dfaa4107765dd7fcf891e4967c0930d5fd/PrivateFrameworks/UserNotificationsKit.framework/NCNotificationDispatcher.h
+SHA256 552fe90e7bf7c4aa4c7aa3efade7df08133ab2b1453702431bf2e909d9bdf139
+48: - (void)destination:(id)arg1 requestsClearingNotificationRequests:(id)arg2;
+49: - (void)destination:(id)arg1 requestsClearingNotificationRequests:(id)arg2 fromDestinations:(id)arg3;
+50: - (void)destination:(id)arg1 requestsClearingNotificationRequestsFromDate:(id)arg2 toDate:(id)arg3 inSections:(id)arg4;
+51: - (void)destination:(id)arg1 requestsClearingNotificationRequestsInSections:(id)arg2;
+68: - (void)modifyNotificationWithRequest:(id)arg1;
+74: - (void)postNotificationWithRequest:(id)arg1;
+92: - (void)withdrawNotificationWithRequest:(id)arg1;
+
+URL https://raw.githubusercontent.com/MTACS/iOS-17-Runtime-Headers/d1d960dfaa4107765dd7fcf891e4967c0930d5fd/PrivateFrameworks/CoverSheet.framework/CSCombinedListViewController.h
+SHA256 b6fc59df3231043339f3a3a3ce383d8048fc346c23eeaab183395200f21ed228
+149: @property (nonatomic, readonly) UIViewController *notificationListViewController;
+348: - (id)notificationListViewController;
+398: - (void)postNotificationRequest:(id)arg1;
+476: - (void)updateNotificationRequest:(id)arg1;
+488: - (void)withdrawNotificationRequest:(id)arg1;
+
+URL https://raw.githubusercontent.com/MTACS/iOS-17-Runtime-Headers/d1d960dfaa4107765dd7fcf891e4967c0930d5fd/PrivateFrameworks/CoverSheet.framework/CSQuickActionsView.h
+SHA256 5c9c91d5e8cb5a7fdbb8cdc3ef567b2eb54ab7ebeac029e1271f2127dac472e0
+3:     CSQuickActionsButton * _cameraButton;
+5:     CSQuickActionsButton * _flashlightButton;
+13: @property (nonatomic, retain) CSQuickActionsButton *cameraButton;
+17: @property (nonatomic, retain) CSQuickActionsButton *flashlightButton;
+39: - (id)cameraButton;
+41: - (id)flashlightButton;
+
+URL https://raw.githubusercontent.com/MTACS/iOS-17-Runtime-Headers/d1d960dfaa4107765dd7fcf891e4967c0930d5fd/PrivateFrameworks/SpringBoard.framework/SBLockScreenManager.h
+SHA256 0517e4ceef40c8899de7a37f5c3dec2f894798984bf0ce7a11432cf52c93c2c6
+18:     bool  _isUILocked;
+64: @property (readonly) bool isUILocked;
+81: + (id)_sharedInstanceCreateIfNeeded:(bool)arg1;
+82: + (id)sharedInstance;
+83: + (id)sharedInstanceIfExists;
+145: - (void)_setUILocked:(bool)arg1;
+239: - (bool)isUILocked;
+
+Reference URL https://raw.githubusercontent.com/dakotadawolfe/axon-ios16-compatibility/5de63de57c2ccb0fdefb33e374c59e1517b0c040/Tweak/AXNManager.m
+SHA256 ed81e13a96e9eec53a57ae0f334b8880f15d9f538542026063875d607f9c77b2
+Reviewed showNotificationRequest/hideNotificationRequest vs clearAll; no source code copied.
