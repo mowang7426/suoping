@@ -58,7 +58,7 @@ jobs:
           /tmp/notification_app_bar_bridge_test
           clang++ -std=c++17 -fobjc-arc -fblocks -Wall -Wextra -Werror -framework Foundation LSGCNotificationOwnerDiscovery.mm tests/notification_owner_discovery_test.mm -o /tmp/notification_owner_discovery_test
           /tmp/notification_owner_discovery_test
-          clang++ -std=c++17 -fobjc-arc -fblocks -Wall -Wextra -Werror -Itests/mock-sdk -framework Foundation -framework CoreGraphics LSGCNotificationOwnerDiscovery.mm LSGCNotificationsAppBar.mm tests/notification_runtime_coordinator_test.mm -o /tmp/notification_runtime_coordinator_test
+          clang++ -std=c++17 -fobjc-arc -fblocks -Wall -Wextra -Werror -Itests/runtime-mocks -Itests/mock-sdk -framework Foundation -framework CoreGraphics LSGCNotificationOwnerDiscovery.mm LSGCNotificationsAppBar.mm tests/notification_runtime_coordinator_test.mm -o /tmp/notification_runtime_coordinator_test
           /tmp/notification_runtime_coordinator_test
           python3 scripts/verify_notification_app_bar.py
 
