@@ -121,7 +121,7 @@ int main() { @autoreleasepool {
     assert(p.hiddenCount==2);
     [c.insertTrace removeAllObjects]; Drain(p,YES);
     assert(Contains(c,modified) && !Contains(c,fresh) && p.hiddenCount==0);
-    assert([c.insertTrace isEqual:@[@"3",@"2"]]);
+    assert(([c.insertTrace isEqual:@[@"3",@"2"]]));
     assert([modified.threadIdentifier isEqual:@"original-native-thread"] && modified.originalSection==1);
     // Rapid selection coalesces before applying; last selection wins.
     for (unsigned i=0;i<200;i++) { assert([p selectApplication:i%2?@"a":@"b"]); }
