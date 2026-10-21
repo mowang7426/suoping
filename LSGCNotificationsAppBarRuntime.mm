@@ -25,9 +25,10 @@ static NSString *status=@"disabled";
 static NSString *lockDiagnostic=@"not-sampled", *attachDiagnostic=@"not-attempted", *providerDiagnostic=@"not-sampled", *snapshotDiagnostic=@"not-sampled", *layoutDiagnostic=@"not-sampled", *hookDiagnostic=@"not-sampled";
 static NSDictionary *discoveryDiagnostic;
 static BOOL discoveryPending=NO, discovering=NO;
-static unsigned discoveryRuns=0, windowCount=0, viewNodes=0;
+static unsigned discoveryRuns=0, windowCount=0, viewNodes=0, ownerSwitchBatches=0;
+static BOOL switchingOwner=NO;
 static void Discover();
-static void Attach(id controller,NSArray *roots);
+static void Attach(id controller,NSArray *verified);
 static void RequestDiscovery();
 static NSArray *lastRows;
 static NSString *lastSelection;
@@ -50,7 +51,9 @@ static id LockManager() {
 }
 static BOOL Locked() {
     id manager=LockManager();
-    BOOL result=LSGCNotificationLockGate(manager,&lockDiagnostic);
+    NSString *sample=nil;
+    BOOL result=LSGCNotificationLockGate(manager,&sample);
+    lockDiagnostic=sample;
     lockDiagnostic=[NSString stringWithFormat:@"manager=%@ sharedInstance=%@ %@",NSStringFromClass([manager class]),manager?@"available":@"missing-or-ABI",lockDiagnostic];
     return result;
 }
@@ -115,6 +118,15 @@ static void Pump() {
     pumping=YES;
     @try {
         if (enabled && discoveryPending && !discovering) { discoveryPending=NO; Discover(); }
+        if (switchingOwner) {
+            BOOL more=[projection restore]; FlushPersistence(); Unmount();
+            status=projection.hiddenCount?@"owner-switch-restore-pending":@"owner-switch-restored";
+            if (++ownerSwitchBatches<=64 && (more || !projection.hiddenCount)) {
+                if (!projection.hiddenCount) { projection=nil; switchingOwner=NO; discoveryPending=YES; }
+                Schedule();
+            } else { switchingOwner=NO; status=@"owner-switch-restore-blocked-wait-lifecycle"; }
+            return;
+        }
         if (!installed) { Unmount(); if (!enabled) status=@"disabled"; return; }
         if (!projection) { Unmount(); if (!enabled) status=@"disabled"; else if ([status isEqual:@"runtime-adapter-ready"] || [status isEqual:@"disabled"]) status=@"waiting-native-owner"; return; }
         if (!owner) { [projection sourceDestroyed]; projection=nil; Unmount(); status=@"source-destroyed"; return; }
@@ -130,7 +142,8 @@ static void Pump() {
             if (more) Schedule(); return;
         }
         if (bar.superview && bar.superview!=owner.view.window) Unmount();
-        LSGCNotificationsAppBarReadSnapshot(owner,&snapshotDiagnostic);
+        NSString *snapshotSample=nil;
+        LSGCNotificationsAppBarReadSnapshot(owner,&snapshotSample); snapshotDiagnostic=snapshotSample;
         CGRect frame;
         if (!Geometry(&frame)) {
             BOOL more=[projection restore]; FlushPersistence(); Unmount(); status=@"safe-layout-space-unavailable";
@@ -171,23 +184,25 @@ static void Schedule() {
     queued=YES;
     dispatch_async(dispatch_get_main_queue(),^{ queued=NO; Pump(); });
 }
-static void Attach(id controller,NSArray *roots) {
+static void Attach(id controller,NSArray *verified) {
     if (!NSThread.isMainThread || !enabled || leaving || ![controller isKindOfClass:UIViewController.class]) return;
     candidate=controller;
     attachDiagnostic=[NSString stringWithFormat:@"candidate=%@ parents=%@",NSStringFromClass([controller class]),LSGCOwnerParentChain(controller)];
     if (!Locked()) { status=@"lock-gate-closed-wait-lifecycle"; return; }
     if (![controller isViewLoaded] || ![controller view].window) { status=@"candidate-offscreen-wait-lifecycle"; return; }
-    NSDictionary *diag=nil;
-    // Reuse production identity policy even for lifecycle candidates. This does
-    // not trust a callback, a class name or a lock-screen ancestor by itself.
-    NSArray *verified=LSGCDiscoverNotificationOwners(roots,&diag);
-    attachDiagnostic=[attachDiagnostic stringByAppendingFormat:@" ownership=%@",diag[@"ownership"]];
+    Class coverWindow=objc_getClass("SBCoverSheetWindow");
+    if (!coverWindow || ![[controller view].window isKindOfClass:coverWindow]) { status=@"candidate-window-not-cover-sheet"; return; }
+    attachDiagnostic=[attachDiagnostic stringByAppendingFormat:@" ownership=%@",discoveryDiagnostic[@"ownership"]];
+    // The only caller passes this batch's production-bridge verified identities.
+    // No second graph walk and no callback-only class/ancestry trust.
     if (![verified containsObject:controller]) { status=@"unverified-cover-sheet-owner"; return; }
     if (owner && owner!=controller) {
-        if (projection.hiddenCount) { status=@"owner-switch-restore-pending"; [projection restore]; FlushPersistence(); return; }
+        if (projection.hiddenCount) { switchingOwner=YES; status=@"owner-switch-restore-pending"; return; }
         projection=nil; Unmount(); presentationMaster=nil;
     }
-    if (!LSGCNotificationsAppBarProviderABI(controller,&providerDiagnostic)) { status=@"runtime-provider-abi-mismatch"; return; }
+    NSString *providerSample=nil;
+    BOOL providerOK=LSGCNotificationsAppBarProviderABI(controller,&providerSample); providerDiagnostic=providerSample;
+    if (!providerOK) { status=@"runtime-provider-abi-mismatch"; return; }
     owner=controller; ownerIdentity=(__bridge void *)controller;
     presentationMaster=Get(controller,"masterList");
     if (!projection) projection=[[LSGCNotificationProjection alloc] initWithController:controller];
@@ -196,7 +211,7 @@ static void Attach(id controller,NSArray *roots) {
 static void RequestDiscovery() {
     if (!NSThread.isMainThread) { dispatch_async(dispatch_get_main_queue(),^{ RequestDiscovery(); }); return; }
     if (!enabled || pumping || discovering) return;
-    discoveryPending=YES; Schedule();
+    ownerSwitchBatches=0; discoveryPending=YES; Schedule();
 }
 static void Discover() {
     if (discovering || !enabled || !installed) return;
@@ -207,15 +222,21 @@ static void Discover() {
         if ([cover isKindOfClass:UIViewController.class]) [roots addObject:cover];
         // Do not scan arbitrary application windows, scenes or UILabels.
         Class coverWindow=objc_getClass("SBCoverSheetWindow");
-        for (UIWindow *w in UIApplication.sharedApplication.windows) {
+        id windows=nil;
+        // SpringBoard may own legacy windows outside a UIWindowScene. Validate
+        // the getter at runtime; never guess an ivar or iterate other app views.
+        LSGCOwnerObjectGetter(UIApplication.sharedApplication,"windows",&windows);
+        unsigned inspectedWindows=0;
+        for (UIWindow *w in [windows isKindOfClass:NSArray.class]?windows:@[]) {
+            if (++inspectedWindows>32) break;
             if (windowCount>=8) break;
             if (!coverWindow || ![w isKindOfClass:coverWindow]) continue;
             ++windowCount; if (w.rootViewController) [roots addObject:w.rootViewController];
             [roots addObject:w];
         }
         if (candidate) [roots addObject:candidate];
-        discoveryDiagnostic=nil;
-        NSArray *found=LSGCDiscoverNotificationOwners(roots,&discoveryDiagnostic);
+        NSDictionary *discoverySample=nil;
+        NSArray *found=LSGCDiscoverNotificationOwners(roots,&discoverySample); discoveryDiagnostic=discoverySample;
         // Discover an already-created shortcut host too. Limited to the loaded
         // cover-sheet tree; no global hooks, text reads or view loading.
         UIView *coverView=[cover isViewLoaded]?[cover view]:nil;
@@ -229,7 +250,7 @@ static void Discover() {
             if (views.count+v.subviews.count<=1024) [views addObjectsFromArray:v.subviews];
         }
         status=@"discovery-no-verified-owner";
-        for (id c in found) { Attach(c,roots); if (owner==c && projection) break; }
+        for (id c in found) { Attach(c,found); if (owner==c && projection) break; }
         if (!Locked() && !projection) status=@"lock-gate-closed-wait-lifecycle";
     } @catch (__unused NSException *e) { status=@"discovery-exception"; }
     @finally { discovering=NO; }
