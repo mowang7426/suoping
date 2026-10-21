@@ -97,6 +97,7 @@ static void NoOpAnimated(id o,SEL s,bool a) { (void)a; NoOp(o,s); }
 static void NativeInsert(id o,SEL s,id r) { (void)s; ++originalCalls; [o insertNotificationRequest:r]; }
 static void NativeRemove(id o,SEL s,id r) { (void)s; ++originalCalls; [o removeNotificationRequest:r]; }
 static void NativeWithdraw(id o,SEL s,id r) { NativeRemove(o,s,r); }
+static void NativeBacklight(id o,SEL s,id controller,long long state,long long source) { (void)controller; (void)state; (void)source; NoOp(o,s); }
 static void NativeLocked(id o,SEL s,bool value) { (void)s; ++originalCalls; [o setLocked:value]; }
 // Drain one already-scheduled production turn deterministically; no wall clock
 // timer and no replacement of Configure/Discover/Attach/Pump/callback logic.
@@ -111,7 +112,7 @@ int main() { @autoreleasepool {
     origQuickLayout=NoOp; origCombinedAppear=NoOpAnimated;
     origInsert=NativeInsert; origRemove=NativeRemove; origModify=NativeInsert;
     origWithdraw=NativeWithdraw; origDispatcherWithdraw=NativeWithdraw;
-    origSetLocked=NativeLocked; origDestroy=NoOp;
+    origSetLocked=NativeLocked; origDestroy=NoOp; origBacklight=NativeBacklight;
     auto *manager=[SBLockScreenManager sharedInstance]; manager.locked=true; manager.visible=true;
     auto *window=[[SBCoverSheetWindow alloc] initWithFrame:CGRectMake(0,0,430,932)];
     auto *host=[CSCombinedListViewController new]; host.view=[[UIView alloc] initWithFrame:window.bounds];
@@ -152,6 +153,12 @@ int main() { @autoreleasepool {
     SetLocked(manager,sel_registerName("_setUILocked:"),true); Tick(); assert(projection && bar);
     manager.passcode=true; Tick(); assert(!bar);
     manager.passcode=false; CombinedAppear(host,sel_registerName("viewDidAppear:"),true); Tick(); assert(bar);
+    // Bright-screen transition discovers a pre-existing source even when the
+    // system did not issue another list/Combined appear or layout callback.
+    manager.visible=false; Tick(); assert(!bar && !projection);
+    manager.visible=true; before=originalCalls;
+    Backlight(manager,sel_registerName("backlightController:didTransitionToBacklightState:source:"),nil,2,3);
+    assert(originalCalls==before+1); Tick(); assert(owner==list && bar);
     // Old/unrelated class callback must not steal ownership from explicit getter.
     auto *unrelated=[NCNotificationStructuredListViewController new]; unrelated.view=list.view;
     unrelated.parentViewController=host; unrelated.masterList=master;
@@ -181,5 +188,5 @@ int main() { @autoreleasepool {
     list.masterList=master; QuickLayout(actions,sel_registerName("layoutSubviews")); Tick(); assert(projection);
     assert([projection selectApplication:@"app.a"]); Tick(); assert(projection.hiddenCount==1);
     Destroy(list,sel_registerName("dealloc")); assert(!projection && !bar && !ownerIdentity);
-    std::cout << "PASS production UIKit coordinator (mock UI only): async enable existing-source discovery, original-first arrival/withdrawal, disable restoration/no resurrection, unlock/relock/passcode, old/unrelated and new callbacks, real Geometry/mount full-space refusal, overlay window migration, wrong-window/provider-ABI rejection, source-destroyed cleanup\n";
+    std::cout << "PASS production UIKit coordinator (mock UI only): async enable existing-source discovery, original-first arrival/withdrawal, disable restoration/no resurrection, unlock/relock/passcode/backlight retry, old/unrelated and new callbacks, real Geometry/mount full-space refusal, overlay window migration, wrong-window/provider-ABI rejection, source-destroyed cleanup\n";
 } return 0; }

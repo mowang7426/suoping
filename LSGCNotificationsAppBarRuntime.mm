@@ -23,6 +23,7 @@ static LSGCNotificationProjection *projection;
 static LSGCNotificationsAppBarView *bar;
 static NSString *status=@"disabled";
 static NSString *lockDiagnostic=@"not-sampled", *attachDiagnostic=@"not-attempted", *providerDiagnostic=@"not-sampled", *snapshotDiagnostic=@"not-sampled", *layoutDiagnostic=@"not-sampled", *hookDiagnostic=@"not-sampled";
+static NSString *wakeHookDiagnostic=@"not-sampled";
 static NSDictionary *discoveryDiagnostic;
 static BOOL discoveryPending=NO, discovering=NO;
 static unsigned discoveryRuns=0, windowCount=0, viewNodes=0, ownerSwitchBatches=0;
@@ -189,7 +190,7 @@ static void Attach(id controller,NSArray *verified) {
     candidate=controller;
     attachDiagnostic=[NSString stringWithFormat:@"candidate=%@ parents=%@",NSStringFromClass([controller class]),LSGCOwnerParentChain(controller)];
     if (!Locked()) { status=@"lock-gate-closed-wait-lifecycle"; return; }
-    if (![controller isViewLoaded] || ![controller view].window) { status=@"candidate-offscreen-wait-lifecycle"; return; }
+    if (![controller isViewLoaded] || ![controller view].window || !Shown([controller view],[controller view].window)) { status=@"candidate-offscreen-wait-lifecycle"; return; }
     Class coverWindow=objc_getClass("SBCoverSheetWindow");
     if (!coverWindow || ![[controller view].window isKindOfClass:coverWindow]) { status=@"candidate-window-not-cover-sheet"; return; }
     attachDiagnostic=[attachDiagnostic stringByAppendingFormat:@" ownership=%@",discoveryDiagnostic[@"ownership"]];
@@ -362,6 +363,14 @@ static void SetLocked(id self,SEL cmd,bool locked) {
     if (!locked) LSGCNotificationsAppBarLeaveLockScreen();
     else { leaving=NO; RequestDiscovery(); }
 }
+static void (*origBacklight)(id,SEL,id,long long,long long);
+static void Backlight(id self,SEL cmd,id controller,long long state,long long source) {
+    origBacklight(self,cmd,controller,state,source);
+    // Do not invent numeric meanings for private backlight states. Resample
+    // verified lock API after the real transition, and discover existing owners.
+    void (^retry)(void)=^{ if (Locked()) leaving=NO; RequestDiscovery(); };
+    if (NSThread.isMainThread) retry(); else dispatch_async(dispatch_get_main_queue(),retry);
+}
 struct Hook { const char *cls,*selector; char result; const char *args; IMP replacement; IMP *original; };
 static void Install() {
     if (installed) return;
@@ -395,6 +404,11 @@ static void Install() {
     // Optional narrow lifecycle wake trigger; no global UIView interception.
     Class combined=objc_getClass("CSCombinedListViewController");
     if (Signature(combined,"viewDidAppear:",'v',"B")) MSHookMessageEx(combined,sel_registerName("viewDidAppear:"),(IMP)CombinedAppear,(IMP *)&origCombinedAppear);
+    Class lockClass=objc_getClass("SBLockScreenManager");
+    const char *wake="backlightController:didTransitionToBacklightState:source:";
+    BOOL wakeABI=Signature(lockClass,wake,'v',"@qq");
+    wakeHookDiagnostic=wakeABI?@"backlight-transition-ABI-valid":@"backlight-transition-missing-or-ABI";
+    if (wakeABI) MSHookMessageEx(lockClass,sel_registerName(wake),(IMP)Backlight,(IMP *)&origBacklight);
     for (const Hook &h:hooks) MSHookMessageEx(objc_getClass(h.cls),sel_registerName(h.selector),h.replacement,h.original);
     hookDiagnostic=@"all-required-signatures-valid";
     status=@"runtime-adapter-ready";
@@ -420,9 +434,9 @@ NSString *LSGCNotificationsAppBarDiagnostic(void) {
     NSUInteger total=[rows.firstObject[@"count"] unsignedIntegerValue];
     BOOL applied=bar.superview && [status isEqual:@"native-display-projection"] &&
         [projection.reason isEqual:@"ready"] && [lastSelection isEqual:projection.selected] && projection.selected.length>0;
-    return [NSString stringWithFormat:@"NotificationsAppBar enabled=%d adapter=%d mounted=%d applied=%d selected=%@ total=%lu apps=%lu hidden=%lu reason=%@ targetDeviceVerified=0\nownerDiscovery runs=%u windows=%u viewNodes=%u detail=%@\nattach=%@\nlocked=%@\nproviderABI=%@ snapshot=%@ hookABI=%@\nlayout=%@",
+    return [NSString stringWithFormat:@"NotificationsAppBar enabled=%d adapter=%d mounted=%d applied=%d selected=%@ total=%lu apps=%lu hidden=%lu reason=%@ targetDeviceVerified=0\nownerDiscovery runs=%u windows=%u viewNodes=%u detail=%@\nattach=%@\nlocked=%@\nproviderABI=%@ snapshot=%@ hookABI=%@ wakeHook=%@\nlayout=%@",
         enabled,installed,bar.superview!=nil,applied,projection.selected.length?@"app":@"all",(unsigned long)total,
-        (unsigned long)(rows.count?rows.count-1:0),(unsigned long)projection.hiddenCount,status,discoveryRuns,windowCount,viewNodes,discoveryDiagnostic,attachDiagnostic,lockDiagnostic,providerDiagnostic,snapshotDiagnostic,hookDiagnostic,layoutDiagnostic];
+        (unsigned long)(rows.count?rows.count-1:0),(unsigned long)projection.hiddenCount,status,discoveryRuns,windowCount,viewNodes,discoveryDiagnostic,attachDiagnostic,lockDiagnostic,providerDiagnostic,snapshotDiagnostic,hookDiagnostic,wakeHookDiagnostic,layoutDiagnostic];
 }
 __attribute__((constructor)) static void NotificationsAppBarInitialize() {
     _dyld_register_func_for_add_image(ImageLoaded);
