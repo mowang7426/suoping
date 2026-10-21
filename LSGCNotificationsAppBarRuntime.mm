@@ -4,6 +4,8 @@
 #import <objc/message.h>
 #import <mach-o/dyld.h>
 #import "LSGCNotificationsAppBar.h"
+#import "LSGCNotificationOwnerDiscovery.h"
+#include "LSGCNotificationOwnerPolicy.h"
 #import "LSGCNotificationsAppBarView.h"
 #include <cstring>
 #include <atomic>
@@ -20,6 +22,13 @@ static __weak UIView *quick;
 static LSGCNotificationProjection *projection;
 static LSGCNotificationsAppBarView *bar;
 static NSString *status=@"disabled";
+static NSString *lockDiagnostic=@"not-sampled", *attachDiagnostic=@"not-attempted", *providerDiagnostic=@"not-sampled", *snapshotDiagnostic=@"not-sampled", *layoutDiagnostic=@"not-sampled", *hookDiagnostic=@"not-sampled";
+static NSDictionary *discoveryDiagnostic;
+static BOOL discoveryPending=NO, discovering=NO;
+static unsigned discoveryRuns=0, windowCount=0, viewNodes=0;
+static void Discover();
+static void Attach(id controller,NSArray *roots);
+static void RequestDiscovery();
 static NSArray *lastRows;
 static NSString *lastSelection;
 static void Schedule();
@@ -35,18 +44,20 @@ static BOOL Signature(Class cls,const char *name,char result,const char *args) {
     for (unsigned i=0;ok && i<strlen(args);++i) { t=method_copyArgumentType(m,i+2); ok=match(t,args[i]); free(t); }
     return ok;
 }
-static BOOL Locked() {
+static id LockManager() {
     Class cls=objc_getClass("SBLockScreenManager");
-    if (!Signature(object_getClass(cls),"sharedInstance",'@',"")) return NO;
-    id manager=Get(cls,"sharedInstance");
-    const char *checks[]={"isUILocked","isLockScreenVisible","_isPasscodeVisible","isPasscodeEntryTransientOverlayVisible"};
-    for (const char *selector:checks) if (!Signature(object_getClass(manager),selector,'B',"")) return NO;
-    auto flag=[&](const char *selector) { return ((bool(*)(id,SEL))objc_msgSend)(manager,sel_registerName(selector)); };
-    return flag(checks[0]) && flag(checks[1]) && !flag(checks[2]) && !flag(checks[3]);
+    return Signature(object_getClass(cls),"sharedInstance",'@',"")?Get(cls,"sharedInstance"):nil;
+}
+static BOOL Locked() {
+    id manager=LockManager();
+    BOOL result=LSGCNotificationLockGate(manager,&lockDiagnostic);
+    lockDiagnostic=[NSString stringWithFormat:@"manager=%@ sharedInstance=%@ %@",NSStringFromClass([manager class]),manager?@"available":@"missing-or-ABI",lockDiagnostic];
+    return result;
 }
 static BOOL Shown(UIView *view,UIWindow *window) {
     if (!view || view.window!=window || CGRectIsEmpty(view.bounds)) return NO;
-    for (UIView *v=view;v;v=v.superview) if (v.hidden || v.alpha<0.02) return NO;
+    unsigned depth=0;
+    for (UIView *v=view;v;v=v.superview) if (++depth>64 || v.hidden || v.alpha<0.02) return NO;
     return YES;
 }
 static void Unmount() {
@@ -57,43 +68,45 @@ static BOOL Geometry(CGRect *result) {
     UIViewController *controller=owner; UIView *actions=quick;
     UIView *native=controller.isViewLoaded?controller.view:nil;
     UIWindow *window=native.window;
-    if (!window || !Shown(native,window) || !Shown(actions,window)) return NO;
+    layoutDiagnostic=[NSString stringWithFormat:@"owner=%@ nativeWindow=%@ quick=%@ quickWindow=%@ nativeFrame=%@ quickFrame=%@",NSStringFromClass(controller.class),NSStringFromClass(window.class),NSStringFromClass(actions.class),NSStringFromClass(actions.window.class),NSStringFromCGRect(native.frame),NSStringFromCGRect(actions.frame)];
+    if (!window || !Shown(native,window) || !Shown(actions,window)) { layoutDiagnostic=[layoutDiagnostic stringByAppendingString:@" failure=owner-or-quick-offscreen/window-mismatch"]; return NO; }
     if (!Signature(object_getClass(actions),"flashlightButton",'@',"") ||
-        !Signature(object_getClass(actions),"cameraButton",'@',"")) return NO;
+        !Signature(object_getClass(actions),"cameraButton",'@',"")) { layoutDiagnostic=[layoutDiagnostic stringByAppendingString:@" failure=quick-action-getter-ABI"]; return NO; }
     UIView *flash=Get(actions,"flashlightButton"),*camera=Get(actions,"cameraButton");
     if (![flash isKindOfClass:UIView.class] || ![camera isKindOfClass:UIView.class] ||
-        !Shown(flash,window) || !Shown(camera,window)) return NO;
+        !Shown(flash,window) || !Shown(camera,window)) { layoutDiagnostic=[layoutDiagnostic stringByAppendingString:@" failure=shortcut-offscreen"]; return NO; }
     CGRect f=[flash convertRect:flash.bounds toView:window],c=[camera convertRect:camera.bounds toView:window];
     CGFloat ceiling=MIN(CGRectGetMinY(f),CGRectGetMinY(c))-8;
     NSMutableArray<UIView *> *todo=[NSMutableArray arrayWithObject:native];
     CGFloat bottom=-CGFLOAT_MAX;
     Class cell=objc_getClass("NCNotificationListCell");
     for (NSUInteger i=0;i<todo.count;i++) {
-        if (todo.count>1024) return NO;
+        if (todo.count>1024) { layoutDiagnostic=[layoutDiagnostic stringByAppendingString:@" failure=cell-node-budget"]; return NO; }
         UIView *v=todo[i];
         if (Shown(v,window) && [v isKindOfClass:cell]) {
             CGRect r=[v convertRect:v.bounds toView:window];
             if (CGRectIntersectsRect(r,window.bounds)) bottom=MAX(bottom,CGRectGetMaxY(r));
         }
-        if (v!=bar) [todo addObjectsFromArray:v.subviews];
+        if (v!=bar) { if (todo.count+v.subviews.count>1024) { layoutDiagnostic=[layoutDiagnostic stringByAppendingString:@" failure=local-view-budget"]; return NO; } [todo addObjectsFromArray:v.subviews]; }
     }
-    if (bottom==-CGFLOAT_MAX) return NO;
+    if (bottom==-CGFLOAT_MAX) { layoutDiagnostic=[layoutDiagnostic stringByAppendingString:@" failure=no-visible-native-cell"]; return NO; }
     // Our charging pill is in the shortcut host. Its own identifier is stable;
     // do not inspect notification text, icon accessibility text, or other labels.
     todo=[NSMutableArray arrayWithObject:actions.superview?:actions];
     for (NSUInteger i=0;i<todo.count;i++) {
-        if (todo.count>512) return NO;
+        if (todo.count>512) { layoutDiagnostic=[layoutDiagnostic stringByAppendingString:@" failure=shortcut-node-budget"]; return NO; }
         UIView *v=todo[i];
         if ([v.accessibilityIdentifier isEqual:@"LSGCChargingETAPill"] && Shown(v,window)) {
             CGRect r=[v convertRect:v.bounds toView:window]; ceiling=MIN(ceiling,CGRectGetMinY(r)-8);
         }
-        if (v!=bar) [todo addObjectsFromArray:v.subviews];
+        if (v!=bar) { if (todo.count+v.subviews.count>1024) { layoutDiagnostic=[layoutDiagnostic stringByAppendingString:@" failure=local-view-budget"]; return NO; } [todo addObjectsFromArray:v.subviews]; }
     }
     CGFloat height=bar?bar.intrinsicContentSize.height:MAX(44,ceil([UIFont preferredFontForTextStyle:UIFontTextStyleCaption1].lineHeight*2+16));
     CGRect nativeRect=[native convertRect:native.bounds toView:window];
     CGFloat left=MAX(CGRectGetMinX(nativeRect),window.safeAreaInsets.left)+12;
     CGFloat right=MIN(CGRectGetMaxX(nativeRect),CGRectGetWidth(window.bounds)-window.safeAreaInsets.right)-12;
-    if (!isfinite(bottom) || !isfinite(ceiling) || right-left<160 || ceiling-bottom-8<height) return NO;
+    layoutDiagnostic=[layoutDiagnostic stringByAppendingFormat:@" nativeRect=%@ flashlight=%@ camera=%@ bottom=%.2f ceiling=%.2f available=%.2f required=%.2f width=%.2f",NSStringFromCGRect(nativeRect),NSStringFromCGRect(f),NSStringFromCGRect(c),bottom,ceiling,ceiling-bottom-8,height,right-left];
+    if (!LSGCNotificationOwner::GapFits(bottom,ceiling,right-left,height)) { layoutDiagnostic=[layoutDiagnostic stringByAppendingString:@" failure=insufficient-gap-no-validated-reservation"]; return NO; }
     *result=CGRectMake(left,ceiling-height,right-left,height);
     return CGRectContainsRect(window.bounds,*result) && !CGRectIntersectsRect(*result,f) && !CGRectIntersectsRect(*result,c);
 }
@@ -101,21 +114,30 @@ static void Pump() {
     if (pumping) return;
     pumping=YES;
     @try {
+        if (enabled && discoveryPending && !discovering) { discoveryPending=NO; Discover(); }
         if (!installed) { Unmount(); if (!enabled) status=@"disabled"; return; }
-        if (!projection) { Unmount(); status=enabled?@"waiting-native-owner":@"disabled"; return; }
+        if (!projection) { Unmount(); if (!enabled) status=@"disabled"; else if ([status isEqual:@"runtime-adapter-ready"] || [status isEqual:@"disabled"]) status=@"waiting-native-owner"; return; }
         if (!owner) { [projection sourceDestroyed]; projection=nil; Unmount(); status=@"source-destroyed"; return; }
-        if (!enabled || leaving || interactionPaused || !Locked()) {
-            BOOL more=[projection restore]; FlushPersistence(); Unmount(); status=projection.hiddenCount?@"restore-pending":@"restored";
+        BOOL locked=Locked();
+        if (!enabled || leaving || interactionPaused || !locked) {
+            BOOL more=[projection restore]; FlushPersistence(); Unmount(); status=projection.hiddenCount?@"restore-pending":(!enabled?@"disabled-restored":(!locked?@"lock-gate-closed-wait-lifecycle":@"lifecycle-paused-restored"));
             if (more) Schedule();
             else if (!projection.hiddenCount) projection=nil;
             return;
         }
+        if (!owner.isViewLoaded || !owner.view.window || !Shown(owner.view,owner.view.window)) {
+            BOOL more=[projection restore]; FlushPersistence(); Unmount(); status=@"owner-offscreen-wait-lifecycle";
+            if (more) Schedule(); return;
+        }
+        if (bar.superview && bar.superview!=owner.view.window) Unmount();
+        LSGCNotificationsAppBarReadSnapshot(owner,&snapshotDiagnostic);
         CGRect frame;
         if (!Geometry(&frame)) {
             BOOL more=[projection restore]; FlushPersistence(); Unmount(); status=@"safe-layout-space-unavailable";
             if (more) Schedule(); return;
         }
         BOOL more=[projection reconcile];
+        snapshotDiagnostic=projection.reason;
         FlushPersistence();
         recoveryFailures=0;
         if (more) { Schedule(); return; }
@@ -149,26 +171,77 @@ static void Schedule() {
     queued=YES;
     dispatch_async(dispatch_get_main_queue(),^{ queued=NO; Pump(); });
 }
-static void Attach(id controller) {
-    if (!NSThread.isMainThread || !enabled || !Locked() || leaving || ![controller isKindOfClass:UIViewController.class]) return;
-    UIViewController *parent=[controller parentViewController]; BOOL verifiedParent=NO;
-    Class combined=objc_getClass("CSCombinedListViewController");
-    for (unsigned depth=0;parent && depth<8;parent=parent.parentViewController,++depth) {
-        if ([parent isKindOfClass:combined] && Signature(object_getClass(parent),"notificationListViewController",'@',"") &&
-            Get(parent,"notificationListViewController")==controller) { verifiedParent=YES; break; }
+static void Attach(id controller,NSArray *roots) {
+    if (!NSThread.isMainThread || !enabled || leaving || ![controller isKindOfClass:UIViewController.class]) return;
+    candidate=controller;
+    attachDiagnostic=[NSString stringWithFormat:@"candidate=%@ parents=%@",NSStringFromClass([controller class]),LSGCOwnerParentChain(controller)];
+    if (!Locked()) { status=@"lock-gate-closed-wait-lifecycle"; return; }
+    if (![controller isViewLoaded] || ![controller view].window) { status=@"candidate-offscreen-wait-lifecycle"; return; }
+    NSDictionary *diag=nil;
+    // Reuse production identity policy even for lifecycle candidates. This does
+    // not trust a callback, a class name or a lock-screen ancestor by itself.
+    NSArray *verified=LSGCDiscoverNotificationOwners(roots,&diag);
+    attachDiagnostic=[attachDiagnostic stringByAppendingFormat:@" ownership=%@",diag[@"ownership"]];
+    if (![verified containsObject:controller]) { status=@"unverified-cover-sheet-owner"; return; }
+    if (owner && owner!=controller) {
+        if (projection.hiddenCount) { status=@"owner-switch-restore-pending"; [projection restore]; FlushPersistence(); return; }
+        projection=nil; Unmount(); presentationMaster=nil;
     }
-    if (!verifiedParent) { status=@"unverified-cover-sheet-owner"; return; }
-    if (owner && owner!=controller) return; // Never move hidden ownership to another native source.
-    if (!LSGCNotificationsAppBarProviderABI(controller,nullptr)) { status=@"runtime-provider-abi-mismatch"; return; }
+    if (!LSGCNotificationsAppBarProviderABI(controller,&providerDiagnostic)) { status=@"runtime-provider-abi-mismatch"; return; }
     owner=controller; ownerIdentity=(__bridge void *)controller;
     presentationMaster=Get(controller,"masterList");
     if (!projection) projection=[[LSGCNotificationProjection alloc] initWithController:controller];
-    Schedule();
+    status=@"owner-bound";
+}
+static void RequestDiscovery() {
+    if (!NSThread.isMainThread) { dispatch_async(dispatch_get_main_queue(),^{ RequestDiscovery(); }); return; }
+    if (!enabled || pumping || discovering) return;
+    discoveryPending=YES; Schedule();
+}
+static void Discover() {
+    if (discovering || !enabled || !installed) return;
+    discovering=YES; ++discoveryRuns; windowCount=0; viewNodes=0;
+    @try {
+        NSMutableArray *roots=[NSMutableArray array];
+        id cover=nil; LSGCOwnerObjectGetter(LockManager(),"coverSheetViewController",&cover);
+        if ([cover isKindOfClass:UIViewController.class]) [roots addObject:cover];
+        // Do not scan arbitrary application windows, scenes or UILabels.
+        Class coverWindow=objc_getClass("SBCoverSheetWindow");
+        for (UIWindow *w in UIApplication.sharedApplication.windows) {
+            if (windowCount>=8) break;
+            if (!coverWindow || ![w isKindOfClass:coverWindow]) continue;
+            ++windowCount; if (w.rootViewController) [roots addObject:w.rootViewController];
+            [roots addObject:w];
+        }
+        if (candidate) [roots addObject:candidate];
+        discoveryDiagnostic=nil;
+        NSArray *found=LSGCDiscoverNotificationOwners(roots,&discoveryDiagnostic);
+        // Discover an already-created shortcut host too. Limited to the loaded
+        // cover-sheet tree; no global hooks, text reads or view loading.
+        UIView *coverView=[cover isViewLoaded]?[cover view]:nil;
+        NSMutableArray *views=[NSMutableArray array];
+        if (coverView) [views addObject:coverView];
+        for (UIViewController *c in roots) if ([c isKindOfClass:UIViewController.class] && c.isViewLoaded && c.view.window && views.count<1024) [views addObject:c.view];
+        Class quickClass=objc_getClass("CSQuickActionsView");
+        for (NSUInteger i=0;i<views.count && i<1024;++i) {
+            UIView *v=views[i]; ++viewNodes;
+            if (quickClass && [v isKindOfClass:quickClass]) quick=v;
+            if (views.count+v.subviews.count<=1024) [views addObjectsFromArray:v.subviews];
+        }
+        status=@"discovery-no-verified-owner";
+        for (id c in found) { Attach(c,roots); if (owner==c && projection) break; }
+        if (!Locked() && !projection) status=@"lock-gate-closed-wait-lifecycle";
+    } @catch (__unused NSException *e) { status=@"discovery-exception"; }
+    @finally { discovering=NO; }
 }
 static void Observe(id request,BOOL removed) {
     if (!NSThread.isMainThread) { dispatch_async(dispatch_get_main_queue(),^{ Observe(request,removed); }); return; }
     if (!enabled && !projection.hiddenCount) return;
     [projection observeRequest:request removed:removed]; Schedule();
+}
+static void (*origCombinedAppear)(id,SEL,bool);
+static void CombinedAppear(id self,SEL cmd,bool animated) {
+    origCombinedAppear(self,cmd,animated); leaving=NO; RequestDiscovery();
 }
 static void (*origLayout)(id,SEL);
 static void (*origAppear)(id,SEL,bool);
@@ -191,6 +264,7 @@ static void (*origSetLocked)(id,SEL,bool);
 static void (*origPasscode)(id,SEL,bool,bool);
 static void Passcode(id self,SEL cmd,bool visible,bool animated) {
     origPasscode(self,cmd,visible,animated);
+    if (!visible) { leaving=NO; RequestDiscovery(); }
     if (NSThread.isMainThread && visible) Unmount();
     Schedule();
 }
@@ -202,7 +276,7 @@ static void InteractionBegin(id self,SEL cmd,id list,id card) {
 }
 static void InteractionEnd(id self,SEL cmd,id list,id card) {
     origInteractionEnd(self,cmd,list,card);
-    if (list==owner) { interactionPaused=NO; Attach(list); Schedule(); }
+    if (list==owner) { interactionPaused=NO; RequestDiscovery(); }
 }
 static void (*origPersist)(id,SEL);
 static void (*origDestroy)(__unsafe_unretained id,SEL);
@@ -233,10 +307,10 @@ static void FlushPersistence() {
 static void Layout(id self,SEL cmd) {
     origLayout(self,cmd);
     candidate=self;
-    if (enabled && !pumping) Attach(self);
+    RequestDiscovery();
 }
 static void Appear(id self,SEL cmd,bool animated) {
-    origAppear(self,cmd,animated); leaving=NO; Attach(self);
+    origAppear(self,cmd,animated); candidate=self; leaving=NO; RequestDiscovery();
 }
 static void Disappear(id self,SEL cmd,bool animated) {
     origDisappear(self,cmd,animated);
@@ -244,7 +318,7 @@ static void Disappear(id self,SEL cmd,bool animated) {
 }
 static void QuickLayout(id self,SEL cmd) {
     origQuickLayout(self,cmd); quick=self;
-    if (enabled && !pumping) Schedule();
+    RequestDiscovery();
 }
 static void Insert(id self,SEL cmd,id request) {
     origInsert(self,cmd,request);
@@ -258,13 +332,14 @@ static void Remove(id self,SEL cmd,id request) {
     origRemove(self,cmd,request);
     if (!LSGCNotificationProjectionDepth && self==owner) Observe(request,YES);
 }
-static void Post(id self,SEL cmd,id request) { origPost(self,cmd,request); Schedule(); }
-static void Update(id self,SEL cmd,id request) { origUpdate(self,cmd,request); Schedule(); }
+static void Post(id self,SEL cmd,id request) { origPost(self,cmd,request); RequestDiscovery(); }
+static void Update(id self,SEL cmd,id request) { origUpdate(self,cmd,request); RequestDiscovery(); }
 static void Withdraw(id self,SEL cmd,id request) { origWithdraw(self,cmd,request); Observe(request,YES); }
 static void DispatcherWithdraw(id self,SEL cmd,id request) { origDispatcherWithdraw(self,cmd,request); Observe(request,YES); }
 static void SetLocked(id self,SEL cmd,bool locked) {
     origSetLocked(self,cmd,locked);
     if (!locked) LSGCNotificationsAppBarLeaveLockScreen();
+    else { leaving=NO; RequestDiscovery(); }
 }
 struct Hook { const char *cls,*selector; char result; const char *args; IMP replacement; IMP *original; };
 static void Install() {
@@ -293,10 +368,14 @@ static void Install() {
     // Validate the WHOLE surface before hooking ANY method. Unknown iOS17
     // runtime shape remains off; no fake-success flag and no invented selector.
     for (const Hook &h:hooks) if (!Signature(objc_getClass(h.cls),h.selector,h.result,h.args)) {
-        status=@"runtime-hook-abi-unavailable"; return;
+        hookDiagnostic=[NSString stringWithFormat:@"%s/%s",h.cls,h.selector]; status=@"runtime-hook-abi-unavailable"; return;
     }
     installed=YES;
+    // Optional narrow lifecycle wake trigger; no global UIView interception.
+    Class combined=objc_getClass("CSCombinedListViewController");
+    if (Signature(combined,"viewDidAppear:",'v',"B")) MSHookMessageEx(combined,sel_registerName("viewDidAppear:"),(IMP)CombinedAppear,(IMP *)&origCombinedAppear);
     for (const Hook &h:hooks) MSHookMessageEx(objc_getClass(h.cls),sel_registerName(h.selector),h.replacement,h.original);
+    hookDiagnostic=@"all-required-signatures-valid";
     status=@"runtime-adapter-ready";
 }
 static void ImageLoaded(const struct mach_header *,intptr_t) {
@@ -307,7 +386,7 @@ static void ImageLoaded(const struct mach_header *,intptr_t) {
 void LSGCNotificationsAppBarConfigure(BOOL value) {
     if (!NSThread.isMainThread) { dispatch_async(dispatch_get_main_queue(),^{ LSGCNotificationsAppBarConfigure(value); }); return; }
     enabled=value;
-    if (value) { Install(); leaving=NO; recoveryFailures=0; if (installed && candidate) Attach(candidate); }
+    if (value) { Install(); leaving=NO; recoveryFailures=0; if (installed) RequestDiscovery(); }
     Schedule();
 }
 void LSGCNotificationsAppBarLeaveLockScreen(void) {
@@ -320,9 +399,9 @@ NSString *LSGCNotificationsAppBarDiagnostic(void) {
     NSUInteger total=[rows.firstObject[@"count"] unsignedIntegerValue];
     BOOL applied=bar.superview && [status isEqual:@"native-display-projection"] &&
         [projection.reason isEqual:@"ready"] && [lastSelection isEqual:projection.selected] && projection.selected.length>0;
-    return [NSString stringWithFormat:@"NotificationsAppBar enabled=%d adapter=%d mounted=%d applied=%d selected=%@ total=%lu apps=%lu hidden=%lu reason=%@ targetDeviceVerified=0",
+    return [NSString stringWithFormat:@"NotificationsAppBar enabled=%d adapter=%d mounted=%d applied=%d selected=%@ total=%lu apps=%lu hidden=%lu reason=%@ targetDeviceVerified=0\nownerDiscovery runs=%u windows=%u viewNodes=%u detail=%@\nattach=%@\nlocked=%@\nproviderABI=%@ snapshot=%@ hookABI=%@\nlayout=%@",
         enabled,installed,bar.superview!=nil,applied,projection.selected.length?@"app":@"all",(unsigned long)total,
-        (unsigned long)(rows.count?rows.count-1:0),(unsigned long)projection.hiddenCount,status];
+        (unsigned long)(rows.count?rows.count-1:0),(unsigned long)projection.hiddenCount,status,discoveryRuns,windowCount,viewNodes,discoveryDiagnostic,attachDiagnostic,lockDiagnostic,providerDiagnostic,snapshotDiagnostic,hookDiagnostic,layoutDiagnostic];
 }
 __attribute__((constructor)) static void NotificationsAppBarInitialize() {
     _dyld_register_func_for_add_image(ImageLoaded);

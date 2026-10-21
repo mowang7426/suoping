@@ -23,7 +23,7 @@ def verify(path):
         assert plistlib.loads(read(injection+'.plist'))['Filter']['Bundles']==['com.apple.springboard']
         dylib=read(injection+'.dylib')
         assert len(dylib)>4096
-        for marker in [b'_UIAnimatingLabel', b'CSProminentTimeView', b'SBFLockScreenDateView', b'[LSGC] constructor initialized', b'alpha-zero-wrapper-sibling', b'2.0.25-notification-app-bar-candidate', b'LSGC.ClockOutline', b'clockEdgeWidth', b'clockWeight', b'sibling-wrapper-alpha-not-zero', b'unsupported-host-layer-mask:']:
+        for marker in [b'_UIAnimatingLabel', b'CSProminentTimeView', b'SBFLockScreenDateView', b'[LSGC] constructor initialized', b'alpha-zero-wrapper-sibling', b'2.0.26-notification-app-bar-candidate', b'LSGC.ClockOutline', b'clockEdgeWidth', b'clockWeight', b'sibling-wrapper-alpha-not-zero', b'unsupported-host-layer-mask:']:
             assert marker in dylib, f'missing standalone entry/clock marker: {marker!r}'
         entry = plistlib.loads(read(ENTRY))['entry']
         assert entry['bundle'] == 'LockScreenGradientClockPrefs'
@@ -48,7 +48,7 @@ def verify(path):
         assert settings['hideNativeDateLunar']['label']=='隐藏原生日期和农历'
         for marker in [b'hideNativeDateLunar', b'CSProminentSubtitleDateView']:
             assert marker in dylib, f'missing native date implementation marker: {marker!r}'
-        assert subprocess.check_output(['dpkg-deb','-f',str(path),'Version'],text=True).strip()=='2.0.25'
+        assert subprocess.check_output(['dpkg-deb','-f',str(path),'Version'],text=True).strip()=='2.0.26'
         assert settings['notificationAppBar']['default'] is False
         for marker in [b'LSGCNotificationsAppBar',b'NotificationsAppBar enabled=',b'native-display-projection',b'native-display-restore-not-applied',b'native-display-remove-not-applied']:
             assert marker in dylib, f'missing real notification bar integration: {marker!r}'
