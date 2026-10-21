@@ -181,6 +181,17 @@ int main() { @autoreleasepool {
     LSGCNotificationsAppBarConfigure(YES); Tick(); assert(!projection && !bar);
     assert([status isEqual:@"candidate-window-not-cover-sheet"]);
     [newWindow addSubview:host.view]; QuickLayout(actions,sel_registerName("layoutSubviews")); Tick(); assert(bar);
+    // A newly-owned source must restore the previous owner's real hidden rows
+    // before moving ownership, even when no fresh appear callback is delivered.
+    assert([projection selectApplication:@"app.a"]); Tick(); assert(projection.hiddenCount==1);
+    auto *successor=[NCNotificationStructuredListViewController new]; successor.view=list.view; successor.parentViewController=host;
+    auto *successorSection=[NCNotificationStructuredSectionList new]; successorSection.items=[NSMutableArray arrayWithArray:@[Request(@"app.a",@"a2"),Request(@"app.d",@"d1")]];
+    auto *successorMaster=[NCNotificationMasterList new]; successorMaster.notificationListSections=@[successorSection]; successor.masterList=successorMaster;
+    host.childViewControllers=@[successor]; host.notificationListViewController=successor;
+    Layout(successor,sel_registerName("viewDidLayoutSubviews")); Tick(); Tick();
+    assert(owner==successor && projection && [section.items containsObject:c] && ![section.items containsObject:b]);
+    host.childViewControllers=@[list]; host.notificationListViewController=list;
+    Layout(list,sel_registerName("viewDidLayoutSubviews")); Tick(); assert(owner==list && projection);
     // ABI changes must fail closed and be distinguishable from empty rows.
     LSGCNotificationsAppBarConfigure(NO); Tick(); list.masterList=[NSObject new];
     LSGCNotificationsAppBarConfigure(YES); Tick();
