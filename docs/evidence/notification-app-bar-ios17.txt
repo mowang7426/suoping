@@ -114,3 +114,8 @@ SHA256 0517e4ceef40c8899de7a37f5c3dec2f894798984bf0ce7a11432cf52c93c2c6
 Reference URL https://raw.githubusercontent.com/dakotadawolfe/axon-ios16-compatibility/5de63de57c2ccb0fdefb33e374c59e1517b0c040/Tweak/AXNManager.m
 SHA256 ed81e13a96e9eec53a57ae0f334b8880f15d9f538542026063875d607f9c77b2
 Reviewed showNotificationRequest/hideNotificationRequest vs clearAll; no source code copied.
+
+URL https://raw.githubusercontent.com/MTACS/iOS-17-Runtime-Headers/d1d960dfaa4107765dd7fcf891e4967c0930d5fd/PrivateFrameworks/UserNotificationsUIKit.framework/NCNotificationListView.h
+SHA256 5d19bacad50fdfc59362fb5d200f485e19b13205a21f7830c831e048faa9125c
+2: @interface NCNotificationListView : UIScrollView {
+Runtime reservation additionally requires masterListView getter ABI/object identity, owner-view ancestry, same cover-sheet window, clipsToBounds, manual frame layout and untransformed bounded ancestry. Unknown scroll views are never mutated.

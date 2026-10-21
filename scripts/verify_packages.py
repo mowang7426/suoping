@@ -50,7 +50,7 @@ def verify(path):
             assert marker in dylib, f'missing native date implementation marker: {marker!r}'
         assert subprocess.check_output(['dpkg-deb','-f',str(path),'Version'],text=True).strip()=='2.0.26'
         assert settings['notificationAppBar']['default'] is False
-        for marker in [b'LSGCNotificationsAppBar',b'NotificationsAppBar enabled=',b'native-display-projection',b'native-display-restore-not-applied',b'native-display-remove-not-applied',b'ownerDiscovery runs=',b'insufficient-gap-no-validated-reservation',b'explicit-typed-ivar-identity',b'backlight-transition-ABI-valid',b'candidate-window-not-cover-sheet']:
+        for marker in [b'LSGCNotificationsAppBar',b'NotificationsAppBar enabled=',b'native-display-projection',b'native-display-restore-not-applied',b'native-display-remove-not-applied',b'ownerDiscovery runs=',b'reservation-unverified-native-scroll',b'reservation=native-scroll-viewport',b'lastLockscreenAttachFailure=',b'explicit-typed-ivar-identity',b'backlight-transition-ABI-valid',b'candidate-window-not-cover-sheet']:
             assert marker in dylib, f'missing real notification bar integration: {marker!r}'
         assert settings['independentChargingETA']['default'] is False
         assert b'OwnChargingETA(source=' in dylib

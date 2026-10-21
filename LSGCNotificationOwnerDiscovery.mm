@@ -84,9 +84,13 @@ BOOL LSGCNotificationLockGate(id manager,NSString **diagnostic) {
     NSMutableArray *values=[NSMutableArray array]; BOOL valid=YES; bool flags[4]={false,false,true,true};
     const char *checks[]={"isUILocked","isLockScreenVisible","_isPasscodeVisible","isPasscodeEntryTransientOverlayVisible"};
     for (unsigned i=0;i<4;++i) {
-        BOOL available=ABI(manager,checks[i],'B'); valid=valid && available;
-        if (available) flags[i]=((bool(*)(id,SEL))objc_msgSend)(manager,sel_registerName(checks[i]));
-        [values addObject:[NSString stringWithFormat:@"%s=%@",checks[i],available?(flags[i]?@"1":@"0"):@"missing-or-ABI"]];
+        BOOL cppBool=ABI(manager,checks[i],'B'), objcBool=ABI(manager,checks[i],'c');
+        BOOL available=cppBool || objcBool; valid=valid && available;
+        // These four declared boolean getters alone permit BOOL's signed-char
+        // encoding. Do not treat integers, objects or missing methods as bools.
+        if (cppBool) flags[i]=((bool(*)(id,SEL))objc_msgSend)(manager,sel_registerName(checks[i]));
+        else if (objcBool) flags[i]=((signed char(*)(id,SEL))objc_msgSend)(manager,sel_registerName(checks[i]))!=0;
+        [values addObject:[NSString stringWithFormat:@"%s=%@ abi=%s",checks[i],available?(flags[i]?@"1":@"0"):@"missing-or-ABI",cppBool?"B":(objcBool?"c":"rejected")]];
     }
     BOOL locked=valid && flags[0] && flags[1] && !flags[2] && !flags[3];
     if (diagnostic) *diagnostic=[NSString stringWithFormat:@"%@ gate=%d",[values componentsJoinedByString:@","],locked];

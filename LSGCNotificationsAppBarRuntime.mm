@@ -18,6 +18,35 @@ static __weak UIViewController *owner;
 static __weak UIViewController *candidate;
 static void *ownerIdentity=nullptr;
 static unsigned recoveryFailures=0;
+static unsigned attachAttempts=0, attachRejects=0, layoutCallbacks=0, appearCallbacks=0, quickCallbacks=0, lockCallbacks=0;
+static NSString *lastAttachFailure=@"none";
+static __weak UIScrollView *reservedScroll;
+static CGFloat reservedBottom=0;
+static CGRect reservedOriginalFrame, reservedWrittenFrame;
+static BOOL reservedFrame=NO, insetHookReady=NO, writingInsets=NO;
+static void (*origNativeInsets)(id,SEL,UIEdgeInsets);
+static void NativeInsets(id self,SEL cmd,UIEdgeInsets value) {
+    // A native setter is invoked exactly once, with our contribution folded
+    // into the incoming absolute baseline. No recursive setter/layout writes.
+    if (self==reservedScroll && reservedBottom && !writingInsets) value.bottom+=reservedBottom;
+    origNativeInsets(self,cmd,value);
+}
+static void WriteOwnedInsets(UIScrollView *scroll,UIEdgeInsets value) {
+    writingInsets=YES;
+    @try { scroll.contentInset=value; }
+    @finally { writingInsets=NO; }
+}
+// Only our additive inset contribution is removed. Never restore a historical
+// UIEdgeInsets snapshot over a newer system/third-party update.
+static void RestoreReservation() {
+    UIScrollView *scroll=reservedScroll;
+    if (scroll) {
+        UIEdgeInsets insets=scroll.contentInset; insets.bottom-=reservedBottom;
+        if (reservedBottom) WriteOwnedInsets(scroll,insets);
+        if (reservedFrame && CGRectEqualToRect(scroll.frame,reservedWrittenFrame)) scroll.frame=reservedOriginalFrame;
+    }
+    reservedScroll=nil; reservedBottom=0; reservedFrame=NO;
+}
 static __weak UIView *quick;
 static LSGCNotificationProjection *projection;
 static LSGCNotificationsAppBarView *bar;
@@ -41,7 +70,10 @@ static id Get(id o,const char *s) { return ((id(*)(id,SEL))objc_msgSend)(o,sel_r
 static BOOL Signature(Class cls,const char *name,char result,const char *args) {
     Method m=class_getInstanceMethod(cls,sel_registerName(name));
     if (!m || method_getNumberOfArguments(m)!=strlen(args)+2) return NO;
-    auto match=[](const char *s,char c) { while (s && *s && strchr("rnNoORV",*s)) ++s; return s && *s==c; };
+    // 'B' marks only declared boolean slots in the hook table. BOOL on
+    // supported Apple ABIs is either B or signed-char c, both one-byte scalar
+    // boolean arguments; never accept C/i/q/@ for these slots.
+    auto match=[](const char *s,char c) { while (s && *s && strchr("rnNoORV",*s)) ++s; return s && (*s==c || (c=='B' && *s=='c')); };
     char *t=method_copyReturnType(m); BOOL ok=match(t,result); free(t);
     for (unsigned i=0;ok && i<strlen(args);++i) { t=method_copyArgumentType(m,i+2); ok=match(t,args[i]); free(t); }
     return ok;
@@ -65,7 +97,7 @@ static BOOL Shown(UIView *view,UIWindow *window) {
     return YES;
 }
 static void Unmount() {
-    [bar removeFromSuperview]; bar=nil; lastRows=nil; lastSelection=nil;
+    [bar removeFromSuperview]; bar=nil; lastRows=nil; lastSelection=nil; RestoreReservation();
 }
 // Bounded local hierarchy walk, no label/body scans, no screen-size guesses.
 static BOOL Geometry(CGRect *result) {
@@ -110,7 +142,43 @@ static BOOL Geometry(CGRect *result) {
     CGFloat left=MAX(CGRectGetMinX(nativeRect),window.safeAreaInsets.left)+12;
     CGFloat right=MIN(CGRectGetMaxX(nativeRect),CGRectGetWidth(window.bounds)-window.safeAreaInsets.right)-12;
     layoutDiagnostic=[layoutDiagnostic stringByAppendingFormat:@" nativeRect=%@ flashlight=%@ camera=%@ bottom=%.2f ceiling=%.2f available=%.2f required=%.2f width=%.2f",NSStringFromCGRect(nativeRect),NSStringFromCGRect(f),NSStringFromCGRect(c),bottom,ceiling,ceiling-bottom-8,height,right-left];
-    if (!LSGCNotificationOwner::GapFits(bottom,ceiling,right-left,height)) { layoutDiagnostic=[layoutDiagnostic stringByAppendingString:@" failure=insufficient-gap-no-validated-reservation"]; return NO; }
+    // A full native list is not an arbitrary free-space failure. Reserve a
+    // genuine scrollable viewport, but ONLY through the documented iOS17
+    // masterListView identity (NCNotificationListView : UIScrollView).
+    // We do not hunt arbitrary UIScrollViews or obscure notification cells.
+    BOOL gap=LSGCNotificationOwner::GapFits(bottom,ceiling,right-left,height);
+    if (!gap || reservedScroll) {
+        id listView=nil;
+        BOOL getter=LSGCOwnerObjectGetter(controller,"masterListView",&listView);
+        Class nativeList=objc_getClass("NCNotificationListView");
+        UIScrollView *scroll=[listView isKindOfClass:UIScrollView.class]?listView:nil;
+        BOOL descendant=NO,untransformed=YES; unsigned depth=0;
+        for (UIView *v=scroll;v && ++depth<=32;v=v.superview) {
+            if (!CGAffineTransformIsIdentity(v.transform)) untransformed=NO;
+            if (v==native) descendant=YES;
+            if (v==window) break;
+        }
+        if (!getter || !nativeList || ![scroll isKindOfClass:nativeList] || !descendant || !untransformed || depth>32 ||
+            !insetHookReady || !Shown(scroll,window) || !scroll.clipsToBounds || !scroll.translatesAutoresizingMaskIntoConstraints || !scroll.superview) {
+            layoutDiagnostic=[layoutDiagnostic stringByAppendingFormat:@" failure=reservation-unverified-native-scroll getter=%d actual=%@ descendant=%d manual=%d clips=%d insetHook=%d untransformed=%d",getter,NSStringFromClass([listView class]),descendant,scroll.translatesAutoresizingMaskIntoConstraints,scroll.clipsToBounds,insetHookReady,untransformed]; return NO;
+        }
+        if (reservedScroll && reservedScroll!=scroll) RestoreReservation();
+        CGRect original=(reservedScroll==scroll && reservedFrame && CGRectEqualToRect(scroll.frame,reservedWrittenFrame))?reservedOriginalFrame:scroll.frame;
+        CGRect viewport=[scroll.superview convertRect:original toView:window];
+        CGFloat limit=ceiling-height-8;
+        CGFloat reduction=MAX(0,CGRectGetMaxY(viewport)-limit);
+        if (!std::isfinite(reduction) || original.size.height-reduction<44 || right-left<160 ||
+            CGRectGetMinX(viewport)>left || CGRectGetMaxX(viewport)<right || reduction>original.size.height) {
+            layoutDiagnostic=[layoutDiagnostic stringByAppendingString:@" failure=reservation-invalid-local-viewport"]; return NO;
+        }
+        UIEdgeInsets insets=scroll.contentInset;
+        insets.bottom+=reduction-reservedBottom;
+        if (reduction!=reservedBottom) WriteOwnedInsets(scroll,insets);
+        CGRect frame=original; frame.size.height-=reduction;
+        reservedScroll=scroll; reservedBottom=reduction; reservedOriginalFrame=original; reservedWrittenFrame=frame; reservedFrame=YES;
+        if (!CGRectEqualToRect(scroll.frame,frame)) scroll.frame=frame;
+        layoutDiagnostic=[layoutDiagnostic stringByAppendingFormat:@" reservation=native-scroll-viewport additiveBottom=%.2f viewport=%@",reduction,NSStringFromCGRect(frame)];
+    }
     *result=CGRectMake(left,ceiling-height,right-left,height);
     return CGRectContainsRect(window.bounds,*result) && !CGRectIntersectsRect(*result,f) && !CGRectIntersectsRect(*result,c);
 }
@@ -186,24 +254,34 @@ static void Schedule() {
     dispatch_async(dispatch_get_main_queue(),^{ queued=NO; Pump(); });
 }
 static void Attach(id controller,NSArray *verified) {
-    if (!NSThread.isMainThread || !enabled || leaving || ![controller isKindOfClass:UIViewController.class]) return;
+    ++attachAttempts;
+    auto reject=[&](NSString *reason) {
+        ++attachRejects; status=reason;
+        attachDiagnostic=[attachDiagnostic stringByAppendingFormat:@" reject=%@ lock=%@",reason,lockDiagnostic];
+        if (![reason isEqual:@"lock-gate-closed-wait-lifecycle"] || [lastAttachFailure isEqual:@"none"]) lastAttachFailure=attachDiagnostic;
+    };
+    attachDiagnostic=[NSString stringWithFormat:@"candidate=%@ parents=%@",NSStringFromClass([controller class]),[controller isKindOfClass:UIViewController.class]?LSGCOwnerParentChain(controller):@"not-controller"];
+    if (!NSThread.isMainThread) { reject(@"attach-not-main-thread"); return; }
+    if (!enabled) { reject(@"attach-disabled"); return; }
+    if (leaving) { reject(@"attach-leaving-lockscreen"); return; }
+    if (![controller isKindOfClass:UIViewController.class]) { reject(@"attach-not-controller"); return; }
     candidate=controller;
     attachDiagnostic=[NSString stringWithFormat:@"candidate=%@ parents=%@",NSStringFromClass([controller class]),LSGCOwnerParentChain(controller)];
-    if (!Locked()) { status=@"lock-gate-closed-wait-lifecycle"; return; }
-    if (![controller isViewLoaded] || ![controller view].window || !Shown([controller view],[controller view].window)) { status=@"candidate-offscreen-wait-lifecycle"; return; }
+    if (!Locked()) { reject(@"lock-gate-closed-wait-lifecycle"); return; }
+    if (![controller isViewLoaded] || ![controller view].window || !Shown([controller view],[controller view].window)) { reject(@"candidate-offscreen-wait-lifecycle"); return; }
     Class coverWindow=objc_getClass("SBCoverSheetWindow");
-    if (!coverWindow || ![[controller view].window isKindOfClass:coverWindow]) { status=@"candidate-window-not-cover-sheet"; return; }
+    if (!coverWindow || ![[controller view].window isKindOfClass:coverWindow]) { reject(@"candidate-window-not-cover-sheet"); return; }
     attachDiagnostic=[attachDiagnostic stringByAppendingFormat:@" ownership=%@",discoveryDiagnostic[@"ownership"]];
     // The only caller passes this batch's production-bridge verified identities.
     // No second graph walk and no callback-only class/ancestry trust.
-    if (![verified containsObject:controller]) { status=@"unverified-cover-sheet-owner"; return; }
+    if (![verified containsObject:controller]) { reject(@"unverified-cover-sheet-owner"); return; }
     if (owner && owner!=controller) {
         if (projection.hiddenCount) { switchingOwner=YES; status=@"owner-switch-restore-pending"; return; }
         projection=nil; Unmount(); presentationMaster=nil;
     }
     NSString *providerSample=nil;
     BOOL providerOK=LSGCNotificationsAppBarProviderABI(controller,&providerSample); providerDiagnostic=providerSample;
-    if (!providerOK) { status=@"runtime-provider-abi-mismatch"; return; }
+    if (!providerOK) { reject(@"runtime-provider-abi-mismatch"); return; }
     owner=controller; ownerIdentity=(__bridge void *)controller;
     presentationMaster=Get(controller,"masterList");
     if (!projection) projection=[[LSGCNotificationProjection alloc] initWithController:controller];
@@ -327,19 +405,19 @@ static void FlushPersistence() {
     }
 }
 static void Layout(id self,SEL cmd) {
-    origLayout(self,cmd);
+    origLayout(self,cmd); ++layoutCallbacks;
     candidate=self;
     RequestDiscovery();
 }
 static void Appear(id self,SEL cmd,bool animated) {
-    origAppear(self,cmd,animated); candidate=self; leaving=NO; RequestDiscovery();
+    origAppear(self,cmd,animated); ++appearCallbacks; candidate=self; leaving=NO; RequestDiscovery();
 }
 static void Disappear(id self,SEL cmd,bool animated) {
     origDisappear(self,cmd,animated);
     if (self==owner) { leaving=YES; Schedule(); }
 }
 static void QuickLayout(id self,SEL cmd) {
-    origQuickLayout(self,cmd); quick=self;
+    origQuickLayout(self,cmd); ++quickCallbacks; quick=self;
     RequestDiscovery();
 }
 static void Insert(id self,SEL cmd,id request) {
@@ -359,7 +437,7 @@ static void Update(id self,SEL cmd,id request) { origUpdate(self,cmd,request); R
 static void Withdraw(id self,SEL cmd,id request) { origWithdraw(self,cmd,request); Observe(request,YES); }
 static void DispatcherWithdraw(id self,SEL cmd,id request) { origDispatcherWithdraw(self,cmd,request); Observe(request,YES); }
 static void SetLocked(id self,SEL cmd,bool locked) {
-    origSetLocked(self,cmd,locked);
+    origSetLocked(self,cmd,locked); ++lockCallbacks;
     if (!locked) LSGCNotificationsAppBarLeaveLockScreen();
     else { leaving=NO; RequestDiscovery(); }
 }
@@ -398,7 +476,22 @@ static void Install() {
     // Validate the WHOLE surface before hooking ANY method. Unknown iOS17
     // runtime shape remains off; no fake-success flag and no invented selector.
     for (const Hook &h:hooks) if (!Signature(objc_getClass(h.cls),h.selector,h.result,h.args)) {
-        hookDiagnostic=[NSString stringWithFormat:@"%s/%s",h.cls,h.selector]; status=@"runtime-hook-abi-unavailable"; return;
+        Method method=class_getInstanceMethod(objc_getClass(h.cls),sel_registerName(h.selector));
+        hookDiagnostic=[NSString stringWithFormat:@"%s/%s expectedReturn=%c expectedArgs=%s observed=%s",h.cls,h.selector,h.result,h.args,method?method_getTypeEncoding(method):"missing"];
+        status=@"runtime-hook-abi-unavailable"; return;
+    }
+    // A narrowly scoped class setter observer is required for reservation:
+    // it tracks external absolute inset updates on OUR verified instance only.
+    // No UIView/global UIScrollView setter hooks and no synchronous Apply.
+    Class listClass=objc_getClass("NCNotificationListView");
+    SEL insetSelector=@selector(setContentInset:);
+    Method insetMethod=class_getInstanceMethod(listClass,insetSelector);
+    if (insetMethod && method_getNumberOfArguments(insetMethod)==3) {
+        char *argument=method_copyArgumentType(insetMethod,2);
+        char *result=method_copyReturnType(insetMethod);
+        insetHookReady=argument && result && !strcmp(argument,@encode(UIEdgeInsets)) && !strcmp(result,"v");
+        free(argument); free(result);
+        if (insetHookReady) MSHookMessageEx(listClass,insetSelector,(IMP)NativeInsets,(IMP *)&origNativeInsets);
     }
     installed=YES;
     // Optional narrow lifecycle wake trigger; no global UIView interception.
@@ -415,7 +508,7 @@ static void Install() {
 }
 static void ImageLoaded(const struct mach_header *,intptr_t) {
     if (installQueued.exchange(true)) return;
-    dispatch_async(dispatch_get_main_queue(),^{ installQueued=false; Install(); });
+    dispatch_async(dispatch_get_main_queue(),^{ installQueued=false; Install(); if (installed && enabled) RequestDiscovery(); });
 }
 }
 void LSGCNotificationsAppBarConfigure(BOOL value) {
@@ -434,9 +527,10 @@ NSString *LSGCNotificationsAppBarDiagnostic(void) {
     NSUInteger total=[rows.firstObject[@"count"] unsignedIntegerValue];
     BOOL applied=bar.superview && [status isEqual:@"native-display-projection"] &&
         [projection.reason isEqual:@"ready"] && [lastSelection isEqual:projection.selected] && projection.selected.length>0;
-    return [NSString stringWithFormat:@"NotificationsAppBar enabled=%d adapter=%d mounted=%d applied=%d selected=%@ total=%lu apps=%lu hidden=%lu reason=%@ targetDeviceVerified=0\nownerDiscovery runs=%u windows=%u viewNodes=%u detail=%@\nattach=%@\nlocked=%@\nproviderABI=%@ snapshot=%@ hookABI=%@ wakeHook=%@\nlayout=%@",
+    NSString *main=[NSString stringWithFormat:@"NotificationsAppBar enabled=%d adapter=%d mounted=%d applied=%d selected=%@ total=%lu apps=%lu hidden=%lu reason=%@ targetDeviceVerified=0\nownerDiscovery runs=%u windows=%u viewNodes=%u detail=%@\nattach=%@\nlocked=%@\nproviderABI=%@ snapshot=%@ hookABI=%@ wakeHook=%@\nlayout=%@",
         enabled,installed,bar.superview!=nil,applied,projection.selected.length?@"app":@"all",(unsigned long)total,
         (unsigned long)(rows.count?rows.count-1:0),(unsigned long)projection.hiddenCount,status,discoveryRuns,windowCount,viewNodes,discoveryDiagnostic,attachDiagnostic,lockDiagnostic,providerDiagnostic,snapshotDiagnostic,hookDiagnostic,wakeHookDiagnostic,layoutDiagnostic];
+    return [main stringByAppendingFormat:@"\ncallbacks layout=%u appear=%u quick=%u lock=%u attachAttempts=%u attachRejects=%u\nlastLockscreenAttachFailure=%@",layoutCallbacks,appearCallbacks,quickCallbacks,lockCallbacks,attachAttempts,attachRejects,lastAttachFailure];
 }
 __attribute__((constructor)) static void NotificationsAppBarInitialize() {
     _dyld_register_func_for_add_image(ImageLoaded);

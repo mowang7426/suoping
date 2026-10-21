@@ -7,7 +7,7 @@
 #include <iostream>
 @implementation UIView
 - (instancetype)init { return [self initWithFrame:CGRectZero]; }
-- (instancetype)initWithFrame:(CGRect)frame { if ((self=[super init])) { _frame=frame; _bounds=CGRectMake(0,0,frame.size.width,frame.size.height); _alpha=1; _subviews=[NSMutableArray array]; } return self; }
+- (instancetype)initWithFrame:(CGRect)frame { if ((self=[super init])) { _frame=frame; _bounds=CGRectMake(0,0,frame.size.width,frame.size.height); _alpha=1; _transform=CGAffineTransformIdentity; _subviews=[NSMutableArray array]; } return self; }
 - (void)setFrame:(CGRect)frame { _frame=frame; _bounds.size=frame.size; }
 - (UIWindow *)window { if ([self isKindOfClass:UIWindow.class]) return (UIWindow *)self; return self.superview.window; }
 - (CGSize)intrinsicContentSize { return CGSizeMake(240,52); }
@@ -19,6 +19,9 @@
     return rect;
 }
 @end
+@implementation UIScrollView @end
+@interface NCNotificationListView : UIScrollView @end
+@implementation NCNotificationListView @end
 @implementation UIViewController
 - (BOOL)isViewLoaded { return self.view!=nil; }
 @end
@@ -60,6 +63,7 @@
 @implementation NCNotificationMasterList @end
 @interface NCNotificationStructuredListViewController : UIViewController
 @property(nonatomic,strong) id masterList;
+@property(nonatomic,strong) NCNotificationListView *masterListView;
 - (void)insertNotificationRequest:(id)request;
 - (void)modifyNotificationRequest:(id)request;
 - (void)removeNotificationRequest:(id)request;
@@ -98,6 +102,8 @@ static void NativeInsert(id o,SEL s,id r) { (void)s; ++originalCalls; [o insertN
 static void NativeRemove(id o,SEL s,id r) { (void)s; ++originalCalls; [o removeNotificationRequest:r]; }
 static void NativeWithdraw(id o,SEL s,id r) { NativeRemove(o,s,r); }
 static void NativeBacklight(id o,SEL s,id controller,long long state,long long source) { (void)controller; (void)state; (void)source; NoOp(o,s); }
+static unsigned insetCalls=0;
+static void NativeInsetOriginal(id o,SEL s,UIEdgeInsets value) { (void)s; ++insetCalls; [(UIScrollView *)o setContentInset:value]; }
 static void NativeLocked(id o,SEL s,bool value) { (void)s; ++originalCalls; [o setLocked:value]; }
 // Drain one already-scheduled production turn deterministically; no wall clock
 // timer and no replacement of Configure/Discover/Attach/Pump/callback logic.
@@ -108,6 +114,7 @@ static NCNotificationRequest *Request(NSString *app,NSString *key) {
 int main() { @autoreleasepool {
     assert(NSThread.isMainThread);
     installed=YES; // Installation/OS availability is separately compiled for iOS.
+    insetHookReady=YES; origNativeInsets=NativeInsetOriginal;
     origLayout=NoOp; origAppear=NoOpAnimated; origDisappear=NoOpAnimated;
     origQuickLayout=NoOp; origCombinedAppear=NoOpAnimated;
     origInsert=NativeInsert; origRemove=NativeRemove; origModify=NativeInsert;
@@ -169,7 +176,44 @@ int main() { @autoreleasepool {
     // Real production Geometry and mount path: no spare pixels is not success.
     cell.frame=CGRectMake(12,0,400,800); Tick();
     assert(!bar && [status isEqual:@"safe-layout-space-unavailable"]);
-    assert([layoutDiagnostic containsString:@"insufficient-gap-no-validated-reservation"] && [layoutDiagnostic containsString:@"bottom=800.00"]);
+    assert([layoutDiagnostic containsString:@"reservation-unverified-native-scroll"] && [layoutDiagnostic containsString:@"bottom=800.00"]);
+    // The real production reservation path is identity-gated to masterListView.
+    // Full lists get a genuinely shorter native viewport, not an overlay that
+    // simply covers cells. Existing content remains native-scroll reachable.
+    auto *scroll=[[NCNotificationListView alloc] initWithFrame:CGRectMake(0,0,430,810)];
+    scroll.translatesAutoresizingMaskIntoConstraints=YES; scroll.clipsToBounds=YES;
+    [list.view addSubview:scroll]; [scroll addSubview:cell]; list.masterListView=scroll;
+    Tick(); assert(bar && reservedScroll==scroll && reservedBottom>0);
+    CGFloat contribution=reservedBottom;
+    assert(scroll.frame.size.height<810 && scroll.contentInset.bottom==contribution);
+    assert(CGRectGetMaxY(scroll.frame)+8<=CGRectGetMinY(bar.frame));
+    Tick(); assert(scroll.contentInset.bottom==contribution && reservedBottom==contribution);
+    UIEdgeInsets external=scroll.contentInset; external.bottom=7; external.top=19;
+    unsigned insetBefore=insetCalls;
+    NativeInsets(scroll,@selector(setContentInset:),external); // real external absolute setter callback
+    assert(insetCalls==insetBefore+1);
+    auto *other=[UIScrollView new]; NativeInsets(other,@selector(setContentInset:),external);
+    assert(other.contentInset.bottom==7); // never alter an unrelated instance
+    Tick(); assert(scroll.contentInset.bottom==contribution+7);
+    external.bottom=150; NativeInsets(scroll,@selector(setContentInset:),external);
+    Tick(); assert(scroll.contentInset.bottom==contribution+150);
+    external.bottom=7; NativeInsets(scroll,@selector(setContentInset:),external);
+    LSGCNotificationsAppBarConfigure(NO); Tick();
+    assert(scroll.contentInset.bottom==7 && scroll.contentInset.top==19 && scroll.frame.size.height==810 && !reservedScroll);
+    LSGCNotificationsAppBarConfigure(YES); Tick(); assert(bar && reservedScroll==scroll);
+    // An external/native frame update is newer authority: do not stale-write
+    // the pre-reservation historical frame when disabling.
+    CGRect systemFrame=scroll.frame; systemFrame.size.height=700; scroll.frame=systemFrame;
+    LSGCNotificationsAppBarConfigure(NO); Tick(); assert(scroll.frame.size.height==700 && scroll.contentInset.bottom==7);
+    // Unknown/autolayout scroll containers fail closed rather than mutate them.
+    scroll.translatesAutoresizingMaskIntoConstraints=NO;
+    LSGCNotificationsAppBarConfigure(YES); Tick(); assert(!bar && !reservedScroll);
+    scroll.translatesAutoresizingMaskIntoConstraints=YES;
+    scroll.frame=CGRectMake(0,0,430,810);
+    scroll.transform=CGAffineTransformMakeScale(0.9,0.9); Tick(); assert(!bar && !reservedScroll);
+    scroll.transform=CGAffineTransformIdentity;
+    insetHookReady=NO; Tick(); assert(!bar && !reservedScroll && [layoutDiagnostic containsString:@"insetHook=0"]);
+    insetHookReady=YES;
     cell.frame=CGRectMake(12,400,400,250); Tick(); assert(bar);
     // Window migration is local: detach old overlay, attach to current window.
     auto *newWindow=[[SBCoverSheetWindow alloc] initWithFrame:window.bounds];
@@ -180,6 +224,10 @@ int main() { @autoreleasepool {
     auto *wrongWindow=[[UIWindow alloc] initWithFrame:window.bounds]; [wrongWindow addSubview:host.view];
     LSGCNotificationsAppBarConfigure(YES); Tick(); assert(!projection && !bar);
     assert([status isEqual:@"candidate-window-not-cover-sheet"]);
+    NSString *lockedFailure=lastAttachFailure;
+    manager.locked=false; QuickLayout(actions,sel_registerName("layoutSubviews")); Tick();
+    assert([lastAttachFailure isEqual:lockedFailure]); // settings/unlocked sample must retain evidence
+    manager.locked=true;
     [newWindow addSubview:host.view]; QuickLayout(actions,sel_registerName("layoutSubviews")); Tick(); assert(bar);
     // A newly-owned source must restore the previous owner's real hidden rows
     // before moving ownership, even when no fresh appear callback is delivered.
@@ -199,5 +247,5 @@ int main() { @autoreleasepool {
     list.masterList=master; QuickLayout(actions,sel_registerName("layoutSubviews")); Tick(); assert(projection);
     assert([projection selectApplication:@"app.a"]); Tick(); assert(projection.hiddenCount==1);
     Destroy(list,sel_registerName("dealloc")); assert(!projection && !bar && !ownerIdentity);
-    std::cout << "PASS production UIKit coordinator (mock UI only): async enable existing-source discovery, original-first arrival/withdrawal, disable restoration/no resurrection, unlock/relock/passcode/backlight retry, old/unrelated and new callbacks, real Geometry/mount full-space refusal, overlay window migration, wrong-window/provider-ABI rejection, source-destroyed cleanup\n";
+    std::cout << "PASS production UIKit coordinator (mock UI only): async enable existing-source discovery, original-first arrival/withdrawal, disable restoration/no resurrection, unlock/relock/passcode/backlight retry, old/unrelated and new callbacks, real Geometry/mount unknown-scroll refusal and validated full-list viewport reservation, idempotent additive insets, latest external inset/frame restoration, autolayout refusal, overlay window migration, wrong-window/provider-ABI rejection, source-destroyed cleanup\n";
 } return 0; }

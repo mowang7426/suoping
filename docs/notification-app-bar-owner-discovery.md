@@ -10,7 +10,7 @@
 
 保留四项锁定安全门，没有因猜测删除 selector 或改成“只要有锁屏 window 就算锁定”。新诊断逐项记录可用性与布尔值（缺失为 missing-or-ABI），并记录 candidate class/parent chain、ownership、发现节点/候选/owner、provider ABI、snapshot reason、hook ABI 和具体布局坐标，不记录通知正文。解锁进入设置时离屏/门关闭是正常快照；等待上述生命周期事件恢复发现，不作为锁屏渲染失败证据。
 
-重要未完成边界：当前无法在目标设备验证原生 list inset 的系统回写/滚动/命中测试语义，所以本候选不冒险更改 inset 或永久压缩卡片。满屏无空间时仍拒绝挂载，但明确给出 insufficient-gap-no-validated-reservation、native/window/quick frame、底部/上界/available/required、快捷键 frame；不会声称已经解决满屏显示，不会遮挡通知点击、快捷键或充电胶囊。这是采诊候选，不是设备验证完成版。
+新增空间预留：满屏时只接受经真实 masterListView getter、NCNotificationListView : UIScrollView 类型、owner 后代、可见同窗口、全链无 transform、手动 frame 与 clipsToBounds 校验的原生列表。通过缩短该实例 viewport 并增加本插件独占 bottom inset 为栏预留真实空间；不触碰全局 UIView/UIScrollView setter。仅在 NCNotificationListView 类安装经过 UIEdgeInsets ABI 校验的 setContentInset: observer，外部绝对写入作为新 baseline，原生 setter 每次调用一次，叠加本插件贡献；关闭/卸载只减去自有贡献，frame 未被系统改写才恢复旧 frame。无 timer、draw 同步 Apply 或 setNeedsLayout 风暴。未知/AutoLayout/transform/缺 setter ABI 仍 fail closed。此实现已增加生产 coordinator mock 执行覆盖，但真实设备滚动、命中与原生系统回写语义仍未验证。
 
 保留 2.0.25 owned 原生显示投影恢复/撤回机制，不重写 master 数组，不复制/序列化通知正文，不复活已撤回通知；owner 变化先恢复旧 owned，源销毁清理，关闭开关恢复。栏所在窗口变化时卸载并重建。
 

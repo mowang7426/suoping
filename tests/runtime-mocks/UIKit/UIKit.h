@@ -5,7 +5,8 @@ typedef struct { CGFloat top,left,bottom,right; } UIEdgeInsets;
 @class UIWindow;
 @interface UIView : NSObject
 @property(nonatomic) CGRect frame,bounds;
-@property(nonatomic) BOOL hidden,translatesAutoresizingMaskIntoConstraints;
+@property(nonatomic) CGAffineTransform transform;
+@property(nonatomic) BOOL hidden,translatesAutoresizingMaskIntoConstraints,clipsToBounds;
 @property(nonatomic) CGFloat alpha;
 @property(nonatomic,weak) UIView *superview;
 @property(nonatomic,strong) NSMutableArray<UIView *> *subviews;
@@ -16,6 +17,9 @@ typedef struct { CGFloat top,left,bottom,right; } UIEdgeInsets;
 - (void)addSubview:(UIView *)view;
 - (void)removeFromSuperview;
 - (CGRect)convertRect:(CGRect)rect toView:(UIView *)view;
+@end
+@interface UIScrollView : UIView
+@property(nonatomic) UIEdgeInsets contentInset;
 @end
 @interface UIViewController : NSObject
 @property(nonatomic,strong) UIView *view;

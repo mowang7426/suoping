@@ -34,6 +34,20 @@
 - (bool)_isPasscodeVisible { return self.passcode; }
 - (bool)isPasscodeEntryTransientOverlayVisible { return self.overlay; }
 @end
+@interface CharLockManager : NSObject @end
+@implementation CharLockManager
+- (signed char)isUILocked { return 1; }
+- (signed char)isLockScreenVisible { return 1; }
+- (signed char)_isPasscodeVisible { return 0; }
+- (signed char)isPasscodeEntryTransientOverlayVisible { return 0; }
+@end
+@interface IntegerLockManager : NSObject @end
+@implementation IntegerLockManager
+- (int)isUILocked { return 1; }
+- (int)isLockScreenVisible { return 1; }
+- (int)_isPasscodeVisible { return 0; }
+- (int)isPasscodeEntryTransientOverlayVisible { return 0; }
+@end
 static NCNotificationStructuredListViewController *List(Node *parent) {
     auto *list=[NCNotificationStructuredListViewController new]; list.parentViewController=parent; return list;
 }
@@ -85,6 +99,8 @@ int main() { @autoreleasepool {
     manager.visible=true; manager.passcode=true; assert(!LSGCNotificationLockGate(manager,&why));
     manager.passcode=false; manager.overlay=true; assert(!LSGCNotificationLockGate(manager,&why));
     manager.overlay=false; assert(LSGCNotificationLockGate(manager,&why));
+    assert(LSGCNotificationLockGate([CharLockManager new],&why) && [why containsString:@"abi=c"]);
+    assert(!LSGCNotificationLockGate([IntegerLockManager new],&why) && [why containsString:@"missing-or-ABI"]);
     assert(!LSGCNotificationLockGate([NSObject new],&why));
     assert([why containsString:@"isUILocked=missing-or-ABI"] && [why containsString:@"isPasscodeEntryTransientOverlayVisible=missing-or-ABI"]);
     using LSGCNotificationOwner::GapFits;
