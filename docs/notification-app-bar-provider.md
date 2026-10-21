@@ -11,7 +11,7 @@
 固定头文件来源：MTACS/iOS-17-Runtime-Headers@d1d960dfaa4107765dd7fcf891e4967c0930d5fd（17.0.3，不冒称精确17.0）。相关原生声明与下载内容 SHA256 记录于 `docs/evidence/notification-app-bar-ios17.txt`。
 
 * UserNotificationsUIKit: StructuredListViewController 的 void 单对象 insert/modify/remove、masterList；MasterList 的只读 notificationListSections 和 `_updateNotificationListPersistentState`；StructuredSectionList 的只读 allNotificationRequests；ListCell 是 UIView，具有原生 content/notification controller。
-* UserNotificationsKit: NCNotificationRequest 的 sectionIdentifier、notificationIdentifier，以及原生保留的 timestamp/thread/options；NCNotificationDispatcher 的 post/modify/withdraw 和另行声明的 destination requestsClearing 接口。生产主动发送中没有任何 Dispatcher clear/withdraw/remove 调用；唯一 Dispatcher 钩子是原始撤回后的旁路观察。
+* UserNotificationsKit: NCNotificationRequest 的 sectionIdentifier、notificationIdentifier，以及原生保留的 timestamp/thread/options；NCNotificationDispatcher 的 post/modify/withdraw 和另行声明的 destination requestsClearing 接口。生产主动发送中没有任何 Dispatcher clear/withdraw/remove 调用；Dispatcher 钩子仅原始撤回/section移除后的旁路观察，先 original 再清除本模块恢复所有权。卡片交互 begin/end 同样 original 优先，交互期间撤栏并恢复全部；锁屏门还验证实际锁屏可见且没有密码/临时密码界面，密码显示事件会撤栏，避免遮挡原生展开/回复和认证。
 * CoverSheet: CSCombinedListViewController 的 notificationListViewController、post/update/withdraw；CSQuickActionsView 的真实 flashlightButton / cameraButton。
 * SpringBoard: SBLockScreenManager 的 sharedInstance、isUILocked、`_setUILocked:(bool)`。
 * 参考：dakotadawolfe/axon-ios16-compatibility@5de63de57c2ccb0fdefb33e374c59e1517b0c040，AXNManager 的 showNotificationRequest / hideNotificationRequest 将请求传给展示控制器，而真正 clear 使用 dispatcher destination requestsClearing。源码只阅读用于区分路径，未移植。

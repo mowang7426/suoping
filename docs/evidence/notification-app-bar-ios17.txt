@@ -73,12 +73,15 @@ SHA256 552fe90e7bf7c4aa4c7aa3efade7df08133ab2b1453702431bf2e909d9bdf139
 51: - (void)destination:(id)arg1 requestsClearingNotificationRequestsInSections:(id)arg2;
 68: - (void)modifyNotificationWithRequest:(id)arg1;
 74: - (void)postNotificationWithRequest:(id)arg1;
+77: - (void)removeNotificationSectionWithIdentifier:(id)arg1;
 92: - (void)withdrawNotificationWithRequest:(id)arg1;
 
 URL https://raw.githubusercontent.com/MTACS/iOS-17-Runtime-Headers/d1d960dfaa4107765dd7fcf891e4967c0930d5fd/PrivateFrameworks/CoverSheet.framework/CSCombinedListViewController.h
 SHA256 b6fc59df3231043339f3a3a3ce383d8048fc346c23eeaab183395200f21ed228
 149: @property (nonatomic, readonly) UIViewController *notificationListViewController;
 348: - (id)notificationListViewController;
+352: - (void)notificationStructuredListViewController:(id)arg1 didBeginUserInteractionWithViewController:(id)arg2;
+353: - (void)notificationStructuredListViewController:(id)arg1 didEndUserInteractionWithViewController:(id)arg2;
 398: - (void)postNotificationRequest:(id)arg1;
 476: - (void)updateNotificationRequest:(id)arg1;
 488: - (void)withdrawNotificationRequest:(id)arg1;
@@ -95,12 +98,18 @@ SHA256 5c9c91d5e8cb5a7fdbb8cdc3ef567b2eb54ab7ebeac029e1271f2127dac472e0
 URL https://raw.githubusercontent.com/MTACS/iOS-17-Runtime-Headers/d1d960dfaa4107765dd7fcf891e4967c0930d5fd/PrivateFrameworks/SpringBoard.framework/SBLockScreenManager.h
 SHA256 0517e4ceef40c8899de7a37f5c3dec2f894798984bf0ce7a11432cf52c93c2c6
 18:     bool  _isUILocked;
+62: @property (readonly) bool isLockScreenVisible;
 64: @property (readonly) bool isUILocked;
 81: + (id)_sharedInstanceCreateIfNeeded:(bool)arg1;
 82: + (id)sharedInstance;
 83: + (id)sharedInstanceIfExists;
+109: - (bool)_isPasscodeVisible;
+140: - (bool)_setPasscodeVisible:(bool)arg1 animated:(bool)arg2;
 145: - (void)_setUILocked:(bool)arg1;
+236: - (bool)isLockScreenVisible;
+237: - (bool)isPasscodeEntryTransientOverlayVisible;
 239: - (bool)isUILocked;
+272: - (void)setPasscodeVisible:(bool)arg1 animated:(bool)arg2;
 
 Reference URL https://raw.githubusercontent.com/dakotadawolfe/axon-ios16-compatibility/5de63de57c2ccb0fdefb33e374c59e1517b0c040/Tweak/AXNManager.m
 SHA256 ed81e13a96e9eec53a57ae0f334b8880f15d9f538542026063875d607f9c77b2
